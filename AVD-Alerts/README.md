@@ -30,7 +30,17 @@ This PowerShell script creates 11 comprehensive alerts for Azure Virtual Desktop
 
 ## Quick Start
 
-### 1. Configure Parameters
+### 1. Get the Script
+
+Clone or download from GitHub:
+```powershell
+git clone https://github.com/AzaryaShaulov/AVD.git
+cd AVD/AVD-Alerts
+```
+
+Or download directly: [Azure-AVD-Alerts.ps1](https://github.com/AzaryaShaulov/AVD/blob/main/AVD-Alerts/Azure-AVD-Alerts.ps1)
+
+### 2. Configure Parameters
 
 Update the default values in the script (lines 50-60) or pass them as arguments:
 
@@ -43,13 +53,13 @@ $Location = "your-azure-region"
 # Option 2: Pass as arguments (see usage examples below)
 ```
 
-### 2. Login to Azure
+### 3. Login to Azure
 
 ```powershell
 az login
 ```
 
-### 3. Run the Script
+### 4. Run the Script
 
 ```powershell
 .\Azure-AVD-Alerts.ps1 -EmailTo "admin@yourdomain.com"
