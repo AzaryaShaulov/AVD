@@ -48,7 +48,7 @@ param(
 
   [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
-  [string]$WorkspaceName = "AVD-LAW"
+  [string]$WorkspaceName = "AVD-LAW",
 
   [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
