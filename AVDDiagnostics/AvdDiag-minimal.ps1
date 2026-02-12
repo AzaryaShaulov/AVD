@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
   Minimal script to enable Azure Monitor diagnostic settings for AVD resources.
+  Repository: https://github.com/AzaryaShaulov/AVD
 
 .DESCRIPTION
   Discovers AVD resources and configures diagnostic settings to send logs to a Log Analytics workspace.
@@ -10,7 +11,8 @@
   Azure subscription ID. Defaults to "00000000-0000-0000-0000-000000000000" (replace with your subscription ID).
 
 .PARAMETER WorkspaceName
-  Name of the Log Analytics workspace. Defaults to "AVD-LAW
+  Name of the Log Analytics workspace. Defaults to "AVD-LAW".
+
 .PARAMETER WorkspaceResourceGroup
   Resource group containing the Log Analytics workspace. Defaults to "az-infra-eus2".
 
@@ -65,6 +67,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Track execution time
+$ScriptStartTime = Get-Date
 
 # Resource types
 $resourceTypes = @(
@@ -207,56 +212,17 @@ function Build-CategoryPayload {
   return $objects | ConvertTo-Json -Compress
 }
 
-function New-ResultObject {
-  param(
-    [string]$Name,
-    [string]$Type,
-    [string]$ResourceGroup,
-    [string]$Status,
-    [string]$Action = "",
-    [bool]$AllLogsSupported = $false,
-    [string]$PostStatus = "",
-    [string]$Error = ""
-  )
-  
-  return [pscustomobject]@{
-    Name            = $Name
-    Type            = $Type
-    ResourceGroup   = $ResourceGroup
-    Status          = $Status
-    Action          = $Action
-    AllLogsSupported= $AllLogsSupported
-    PostStatus      = $PostStatus
-    Error           = $Error
-  }
-}
-
-function Get-ResourceTypeDisplayName {
-  param([string]$ResourceType)
-  return $ResourceType -replace 'Microsoft.DesktopVirtualization/', ''
-}
-
-function Build-CategoryPayload {
-  param(
-    [array]$Categories,
-    [string]$CategoryType
-  )
-  
-  $items = $Categories | Where-Object { $_.categoryType -eq $CategoryType } | Select-Object -ExpandProperty name
-  if (-not $items -or $items.Count -eq 0) {
-    return "[]"
-  }
-  
-  $objects = $items | ForEach-Object { [pscustomobject]@{ category = $_; enabled = $true } }
-  return $objects | ConvertTo-Json -Compress
-}
-
 # =========================
 # Main Execution
 # =========================
 
 try {
   Write-Log "Starting AVD Diagnostics Configuration (enforce allLogs)" "Cyan"
+  
+  # Validate placeholder parameters have been updated
+  if ($SubscriptionId -eq "00000000-0000-0000-0000-000000000000") {
+    throw "Please update the SubscriptionId parameter with your actual Azure subscription ID.`nYou can either edit the default value in the script or pass it as: -SubscriptionId 'YOUR-SUBSCRIPTION-ID'"
+  }
   
   # Validate parameters based on mode
   if (-not $CheckOnly) {
@@ -341,7 +307,10 @@ try {
         Type            = $typeDisplay
         ResourceGroup   = $resource.resourceGroup
         Status          = $diag.Status
+        Action          = "N/A"
         AllLogsSupported= $support.Supported
+        PostStatus      = $diag.Status
+        Error           = ""
       }
 
       $statusColor = switch -Wildcard ($diag.Status) {
@@ -370,11 +339,24 @@ try {
 
     # Export status
     if ($statusResults.Count -gt 0) {
-      $statusResults | Export-Csv -NoTypeInformation -Path $CsvPath -Force
-      Write-Log ""
-      Write-Log "Status exported to: $CsvPath" "Green"
+      try {
+        $csvDirectory = Split-Path $CsvPath -Parent
+        if ($csvDirectory -and -not (Test-Path $csvDirectory)) {
+          New-Item -ItemType Directory -Path $csvDirectory -Force | Out-Null
+        }
+        $statusResults | Export-Csv -NoTypeInformation -Path $CsvPath -Force -ErrorAction Stop
+        Write-Log ""
+        Write-Log "Status exported to: $CsvPath" "Green"
+      }
+      catch {
+        Write-Log "Warning: Failed to export status to CSV: $($_.Exception.Message)" "Yellow"
+        Write-Log "CSV Path attempted: $CsvPath" "Gray"
+      }
     }
 
+    $duration = (Get-Date) - $ScriptStartTime
+    Write-Log ""
+    Write-Log "Execution time: $($duration.TotalSeconds.ToString('F1')) seconds" "Gray"
     exit 0
   }
 
@@ -382,11 +364,20 @@ try {
   $results = @()
   $success = 0
   $failed  = 0
+  $skippedAlreadyEnabled = 0
+  $skippedAlreadyAllLogs = 0
+  $skippedConflicts = 0
+  $resourceCount = 0
 
   foreach ($resource in $allResources) {
+    $resourceCount++
+    $percentComplete = [Math]::Round(($resourceCount / $allResources.Count) * 100)
+    Write-Progress -Activity "Configuring Diagnostic Settings" -Status "Processing $($resource.name) ($resourceCount of $($allResources.Count))" -PercentComplete $percentComplete
+    
     Write-Log "Processing: $($resource.name)" "Cyan"
 
     try {
+      $typeDisplay = Get-ResourceTypeDisplayName -ResourceType $resource.type
       $diag = Get-DiagnosticStatus -ResourceId $resource.id -DiagName $DiagnosticSettingName
 
       # Determine category support and categories up-front (also used to build payload)
@@ -394,18 +385,20 @@ try {
       $cats = $supportObj.Categories
       $allLogsSupported = $supportObj.Supported
 
-      # Skip ONLY if already enabled AND uses allLogs (when supported)
-      if ($diag.Status -eq "Enabled (allLogs)") {
-        Write-Log "  ⚠ Already configured with allLogs - skipping" "Yellow"
-        $results += New-ResultObject -Name $resource.name -Type $resource.type -ResourceGroup $resource.resourceGroup `
-          -Status "Skipped" -Action "already-allLogs" -AllLogsSupported $allLogsSupported -PostStatus $diag.Status
+      # Skip if diagnostic settings are already enabled (any enabled status)
+      if ($diag.Status -match "^Enabled") {
+        if ($diag.Status -eq "Enabled (allLogs)") {
+          Write-Log "  ✓ Already enabled with allLogs - skipping" "Green"
+          $results += New-ResultObject -Name $resource.name -Type $typeDisplay -ResourceGroup $resource.resourceGroup `
+            -Status "AlreadyEnabled" -Action "allLogs" -AllLogsSupported $allLogsSupported -PostStatus $diag.Status
+          $skippedAlreadyAllLogs++
+        } else {
+          Write-Log "  ✓ Already enabled (not using allLogs$(if (-not $allLogsSupported) { ' - not supported' })) - skipping" "Green"
+          $results += New-ResultObject -Name $resource.name -Type $typeDisplay -ResourceGroup $resource.resourceGroup `
+            -Status "AlreadyEnabled" -Action "without-allLogs" -AllLogsSupported $allLogsSupported -PostStatus $diag.Status
+          $skippedAlreadyEnabled++
+        }
         continue
-      }
-
-      if ($diag.Status -eq "Enabled (not allLogs)" -and $allLogsSupported) {
-        Write-Log "  ⚠ Configured but NOT using allLogs (supported) - will update" "Yellow"
-      } elseif ($diag.Status -eq "Enabled (not allLogs)" -and -not $allLogsSupported) {
-        Write-Log "  ⚠ Configured without allLogs (not supported) - will proceed to ensure logs/metrics are enabled" "Yellow"
       }
 
       # Need categories to proceed
@@ -423,23 +416,33 @@ try {
       # Build metrics payload
       $metricsJson = Build-CategoryPayload -Categories $cats -CategoryType "Metrics"
 
-      # Determine create vs update
-      $existing = az monitor diagnostic-settings show --resource $resource.id --name $DiagnosticSettingName -o json --only-show-errors 2>$null
-      $operation = if ($LASTEXITCODE -eq 0) { "update" } else { "create" }
+      # Determine create vs update based on current diagnostic status
+      $operation = if ($diag.Status -ne "Not Configured") { "update" } else { "create" }
 
       # Apply diagnostic settings (use --metrics only if any)
-      $cmd = "az monitor diagnostic-settings $operation --name $DiagnosticSettingName --resource `"$($resource.id)`" --workspace `"$lawId`" --logs '$logsJson'"
+      $azArgs = @(
+        'monitor', 'diagnostic-settings', $operation,
+        '--name', $DiagnosticSettingName,
+        '--resource', $resource.id,
+        '--workspace', $lawId,
+        '--logs', $logsJson
+      )
       if ($metricsJson -ne "[]") {
-        $cmd += " --metrics '$metricsJson'"
+        $azArgs += @('--metrics', $metricsJson)
       }
-      $cmd += " -o json --only-show-errors 2>&1"
+      $azArgs += @('-o', 'json', '--only-show-errors')
 
-      $output = Invoke-Expression $cmd
+      $output = & az @azArgs 2>&1 | Out-String
       
       if ($LASTEXITCODE -ne 0) {
         # Check if it's a conflict error about duplicate diagnostic settings
         if ($output -match "Conflict.*Data sink.*already used" -or $output -match "can't be reused") {
-          throw "Conflict detected: Logs are already being sent to workspace '$WorkspaceName' by another diagnostic setting. Cannot have duplicate settings for the same category."
+          Write-Log "  ✓ Already configured (different diagnostic setting name) - skipping" "Green"
+          $results += New-ResultObject -Name $resource.name -Type $typeDisplay -ResourceGroup $resource.resourceGroup `
+            -Status "AlreadyEnabled" -Action "conflict" -AllLogsSupported $allLogsSupported `
+            -PostStatus "Enabled (other diagnostic setting)" -Error "No changes made - logs already being sent to this workspace"
+          $skippedConflicts++
+          continue
         }
         throw "Command failed with exit code $LASTEXITCODE. Error: $output"
       }
@@ -453,33 +456,71 @@ try {
       Write-Log "  ✓ Success ($operation) - $($post.Status)" "Green"
       $success++
 
-      $results += New-ResultObject -Name $resource.name -Type $resource.type -ResourceGroup $resource.resourceGroup `
+      $results += New-ResultObject -Name $resource.name -Type $typeDisplay -ResourceGroup $resource.resourceGroup `
         -Status "Success" -Action $operation -AllLogsSupported $allLogsSupported -PostStatus $post.Status
     }
     catch {
       Write-Log "  ✗ Failed: $($_.Exception.Message)" "Red"
       $failed++
 
-      $results += New-ResultObject -Name $resource.name -Type $resource.type -ResourceGroup $resource.resourceGroup `
+      $results += New-ResultObject -Name $resource.name -Type $typeDisplay -ResourceGroup $resource.resourceGroup `
         -Status "Failed" -Error $_.Exception.Message
     }
   }
+  
+  Write-Progress -Activity "Configuring Diagnostic Settings" -Completed
 
   # Export results
   if ($results.Count -gt 0) {
-    $results | Export-Csv -NoTypeInformation -Path $CsvPath -Force
-    Write-Log "Results exported to: $CsvPath" "Green"
+    try {
+      $csvDirectory = Split-Path $CsvPath -Parent
+      if ($csvDirectory -and -not (Test-Path $csvDirectory)) {
+        New-Item -ItemType Directory -Path $csvDirectory -Force | Out-Null
+      }
+      $results | Export-Csv -NoTypeInformation -Path $CsvPath -Force -ErrorAction Stop
+      Write-Log "Results exported to: $CsvPath" "Green"
+    }
+    catch {
+      Write-Log "Warning: Failed to export results to CSV: $($_.Exception.Message)" "Yellow"
+      Write-Log "CSV Path attempted: $CsvPath" "Gray"
+    }
   }
 
   # Summary
-  $skipped = ($results | Where-Object Status -eq "Skipped").Count
+  $skipped = ($results | Where-Object Status -eq "AlreadyEnabled").Count
+  $created = ($results | Where-Object Action -eq "create").Count
+  $updated = ($results | Where-Object Action -eq "update").Count
 
   Write-Log ""
-  Write-Log "=== Summary ===" "Cyan"
-  Write-Log "Total: $($allResources.Count)" "White"
-  Write-Log "Success: $success" "Green"
-  Write-Log "Skipped (already allLogs): $skipped" "Yellow"
-  Write-Log "Failed: $failed" $(if ($failed -gt 0) { "Red" } else { "Green" })
+  Write-Log "=== Diagnostic Settings Summary ===" "Cyan"
+  Write-Log ""
+  Write-Log "Total Resources Processed: $($allResources.Count)" "White"
+  Write-Log ""
+  Write-Log "Already Enabled (no changes made):" "Cyan"
+  Write-Log "  - With allLogs: $skippedAlreadyAllLogs" "Green"
+  Write-Log "  - Without allLogs: $skippedAlreadyEnabled" "Green"
+  Write-Log "  - Conflicts (other diagnostic setting): $skippedConflicts" "Green"
+  Write-Log "  - Total Skipped: $skipped" "Green"
+  Write-Log ""
+  Write-Log "Changes Made:" "Cyan"
+  Write-Log "  - Created: $created" $(if ($created -gt 0) { "Green" } else { "White" })
+  Write-Log "  - Updated: $updated" $(if ($updated -gt 0) { "Green" } else { "White" })
+  Write-Log "  - Success: $success" "Green"
+  Write-Log "  - Failed: $failed" $(if ($failed -gt 0) { "Red" } else { "Green" })
+  Write-Log ""
+
+  if ($results.Count -gt 0) {
+    Write-Log "Detailed Breakdown by Resource Type:" "Cyan"
+    $results | Group-Object { $_.Type } | ForEach-Object {
+      $type = $_.Name
+      $typeResults = $_.Group
+      $typeEnabled = ($typeResults | Where-Object Status -eq "AlreadyEnabled").Count
+      $typeSuccess = ($typeResults | Where-Object Status -eq "Success").Count
+      $typeFailed = ($typeResults | Where-Object Status -eq "Failed").Count
+      Write-Log "  $type - Total: $($typeResults.Count), Enabled: $typeEnabled, Success: $typeSuccess, Failed: $typeFailed" "Gray"
+    }
+    Write-Log ""
+  }
 
   if ($failed -gt 0) {
     Write-Log ""
@@ -490,9 +531,14 @@ try {
     exit 1
   }
 
+  $duration = (Get-Date) - $ScriptStartTime
+  Write-Log ""
+  Write-Log "Execution time: $($duration.TotalSeconds.ToString('F1')) seconds" "Gray"
   exit 0
 }
 catch {
   Write-Log "FATAL ERROR: $($_.Exception.Message)" "Red"
+  $duration = (Get-Date) - $ScriptStartTime
+  Write-Log "Execution time: $($duration.TotalSeconds.ToString('F1')) seconds" "Gray"
   exit 2
 }

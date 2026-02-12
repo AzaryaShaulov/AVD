@@ -2,30 +2,32 @@
 <#
 ==============================================================================
 QUICK START:
-1. Update the default parameter values below (lines 50-60) OR pass them as arguments:
+1. Update the default parameter values below (lines 67-93) with your values:
+   - EmailTo: Your email address for alert notifications
    - ResourceGroup: Your Azure resource group name
    - LawName: Your Log Analytics workspace name  
    - Location: Your Azure region (e.g., eastus, westus2)
 
-2. Run the script:
-   .\Azure-AVD-Alerts.ps1 -EmailTo "your-email@domain.com"
+2. Run the script with defaults:
+   .\Azure-AVD-Alerts.ps1
 
-3. Or specify all parameters:
-   .\Azure-AVD-Alerts.ps1 -EmailTo "your-email@domain.com" `
+3. Or override any parameter:
+   .\Azure-AVD-Alerts.ps1 -EmailTo "admin@contoso.com" `
      -ResourceGroup "rg-avd" -LawName "law-avd" -Location "eastus2"
 ==============================================================================
 .SYNOPSIS
   Creates scheduled query alerts for Azure Virtual Desktop monitoring.
+  Repository: https://github.com/AzaryaShaulov/AVD
 
 .DESCRIPTION
   Configures Log Analytics-based alerts for common AVD error conditions and sends
   notifications via email action group. Requires Azure CLI and appropriate permissions.
   
-  REQUIRED: Update -ResourceGroup, -LawName, and -Location parameters with your values,
-  or pass them as arguments when running the script.
+  REQUIRED: Update default parameter values (EmailTo, ResourceGroup, LawName, Location)
+  in the script, or pass them as arguments when running the script.
 
 .PARAMETER EmailTo
-  Email address for alert notifications.
+  Email address for alert notifications. Default: "your-email@domain.com"
 
 .PARAMETER ActionGroupName
   Name of the Azure Monitor action group.
@@ -49,18 +51,24 @@ QUICK START:
   Preview changes without creating/updating alerts.
 
 .EXAMPLE
+  # Run with default parameters (after updating defaults in script)
+  .\Azure-AVD-Alerts.ps1
+
+.EXAMPLE
+  # Override specific parameters
   .\Azure-AVD-Alerts.ps1 -EmailTo "admin@contoso.com" -ResourceGroup "rg-avd-prod" -LawName "law-avd-prod"
 
 .EXAMPLE
-  .\Azure-AVD-Alerts.ps1 -EmailTo "admin@contoso.com" -Severity 0 -WhatIf
+  # Preview changes without creating alerts
+  .\Azure-AVD-Alerts.ps1 -Severity 0 -WhatIf
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-  [Parameter(Mandatory = $true)]
+  [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
   [ValidatePattern('^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$')]
-  [string]$EmailTo,
+  [string]$EmailTo = "your-email@domain.com",
 
   [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
@@ -88,12 +96,61 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Track execution time
+$ScriptStartTime = Get-Date
+
+# ----------------------------
+# Pre-flight Checks
+# ----------------------------
+
+# Check 1: Verify Azure CLI is installed
+if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+  throw "Azure CLI not found. Please install from https://docs.microsoft.com/cli/azure/install-azure-cli"
+}
+
+# Check 2: Validate placeholder parameters have been updated
+$placeholderParams = @()
+if ($EmailTo -eq "your-email@domain.com") { $placeholderParams += "EmailTo" }
+if ($ResourceGroup -eq "your-resource-group") { $placeholderParams += "ResourceGroup" }
+if ($LawName -eq "your-log-analytics-workspace") { $placeholderParams += "LawName" }
+if ($Location -eq "your-azure-region") { $placeholderParams += "Location" }
+
+if ($placeholderParams.Count -gt 0) {
+  $paramList = $placeholderParams -join ", "
+  throw "Please update the following parameter(s) with actual values: $paramList`nYou can either edit the default values in the script or pass them as arguments."
+}
+
+# Check 3: Verify Azure login and subscription
+Write-Host "[Pre-flight] Checking Azure authentication..." -ForegroundColor Cyan
+$accountInfo = az account show 2>$null | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $null -eq $accountInfo) {
+  throw "Not logged in to Azure. Please run 'az login' first."
+}
+Write-Host "[Pre-flight] Logged in as: $($accountInfo.user.name)" -ForegroundColor Gray
+Write-Host "[Pre-flight] Subscription: $($accountInfo.name) ($($accountInfo.id))" -ForegroundColor Gray
+
 # Alert cadence
 $EvalFrequency = "PT5M"   # every 5 minutes
 $WindowSize    = "PT5M"   # evaluation window (5 minutes)
 
 # Track created/updated alerts for CSV export
 $AlertResults = @()
+$ExistingAlerts = @()
+$NewlyCreatedAlerts = @()
+$UpdatedAlerts = @()
+
+# Performance optimization: Get all existing alerts once
+Write-Host "[Pre-flight] Checking for existing alerts..." -ForegroundColor Cyan
+$existingAlertNamesList = @()
+try {
+  $existingAlertsOutput = az monitor scheduled-query list -g $ResourceGroup --query "[?starts_with(name,'AVD-')].name" -o tsv 2>$null
+  if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingAlertsOutput)) {
+    $existingAlertNamesList = $existingAlertsOutput -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    Write-Host "[Pre-flight] Found $($existingAlertNamesList.Count) existing AVD alert(s)" -ForegroundColor Gray
+  }
+} catch {
+  Write-Host "[Pre-flight] Could not query existing alerts (non-fatal)" -ForegroundColor Yellow
+}
 
 # ----------------------------
 # Helper Functions
@@ -102,6 +159,13 @@ function Write-Log {
   param($Message, $Color = "White")
   $timestamp = Get-Date -Format "HH:mm:ss"
   Write-Host "[$timestamp] $Message" -ForegroundColor $Color
+}
+
+function Test-AlertExists {
+  param([string]$AlertName)
+  
+  # Use cached list from pre-flight check for performance
+  return ($existingAlertNamesList -contains $AlertName)
 }
 
 # ----------------------------
@@ -144,12 +208,25 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
     Write-Log "Action group already exists" "Gray"
   }
 
-  # Ensure email receiver exists
+  # Ensure email receiver exists (use unique name based on email to avoid conflicts)
   Write-Log "Configuring email receiver: $EmailTo" "Gray"
+  $emailSafe = $EmailTo -replace '[^a-zA-Z0-9]', ''
+  $receiverName = "AVDEmail$(if ($emailSafe.Length -gt 20) { $emailSafe.Substring(0,20) } else { $emailSafe })"
+  
+  # Check if receiver already exists with different email
+  $agDetails = az monitor action-group show -g $ResourceGroup -n $ActionGroupName -o json 2>$null | ConvertFrom-Json
+  $existingReceiver = $agDetails.emailReceivers | Where-Object { $_.name -eq $receiverName }
+  
+  if ($existingReceiver -and $existingReceiver.emailAddress -ne $EmailTo) {
+    Write-Log "Updating email receiver to new address: $EmailTo" "Yellow"
+    # Remove old receiver and add new one
+    az monitor action-group update -g $ResourceGroup -n $ActionGroupName --remove emailReceivers name=$receiverName 2>$null | Out-Null
+  }
+  
   $emailOutput = az monitor action-group update `
     -g $ResourceGroup `
     -n $ActionGroupName `
-    --add-action email "EmailSendTO" $EmailTo 2>&1
+    --add-action email $receiverName $EmailTo 2>&1
   
   if ($LASTEXITCODE -ne 0) {
     # Check if error is about duplicate receiver (expected/acceptable)
@@ -194,8 +271,19 @@ function New-OrUpdate-ScheduledQueryAlert {
     4 { "Verbose" }
   }
 
+  # Check if alert already exists
+  $alertExists = Test-AlertExists -AlertName $AlertName
+  
+  if ($alertExists) {
+    $script:ExistingAlerts += $AlertName
+  }
+
   if ($PSCmdlet.ShouldProcess($AlertName, "Create or update scheduled query alert")) {
-    Write-Log "Creating/Updating alert: $AlertName (Severity: $severityText)" "Cyan"
+    if ($alertExists) {
+      Write-Log "Updating existing alert: $AlertName (Severity: $severityText)" "Yellow"
+    } else {
+      Write-Log "Creating new alert: $AlertName (Severity: $severityText)" "Cyan"
+    }
 
     try {
       # Convert multi-line query to single line and escape quotes for Azure CLI
@@ -217,18 +305,28 @@ function New-OrUpdate-ScheduledQueryAlert {
       if ($LASTEXITCODE -eq 0) {
         Write-Log "  ✓ Success" "Green"
         $status = "Success"
+        $action = if ($alertExists) { "Updated" } else { "Created" }
+        
+        if ($alertExists) {
+          $script:UpdatedAlerts += $AlertName
+        } else {
+          $script:NewlyCreatedAlerts += $AlertName
+        }
       } else {
         Write-Log "  ✗ Failed: $output" "Red"
         $status = "Failed"
+        $action = "Failed"
       }
     }
     catch {
       Write-Log "  ✗ Error: $($_.Exception.Message)" "Red"
       $status = "Error"
+      $action = "Error"
     }
   } else {
-    Write-Log "[WhatIf] Would create/update alert: $AlertName" "Yellow"
+    Write-Log "[WhatIf] Would $(if ($alertExists) { 'update' } else { 'create' }) alert: $AlertName" "Yellow"
     $status = "WhatIf"
+    $action = if ($alertExists) { "WouldUpdate" } else { "WouldCreate" }
   }
 
   # Track for CSV export
@@ -236,6 +334,7 @@ function New-OrUpdate-ScheduledQueryAlert {
     AlertName   = $AlertName
     Description = $Description
     Severity    = "$Severity ($severityText)"
+    Action      = $action
     Status      = $status
   }
 }
@@ -268,6 +367,7 @@ New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-ConnectionFailedPersonalDesktop
 union isfuzzy=true WVDHostRegistration, WVDErrors
 | where TimeGenerated > ago(5m)
 | where CodeSymbolic == "ConnectionFailedPersonalDesktopFailedToBeStarted"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
 "@
 
 # Alert: User password has expired
@@ -334,13 +434,98 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
 | project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
 "@
 
+# Alert: Client connection timing issue
+New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed" -Description "Detects when client connects too late and reverse connection is already closed. May indicate network latency or timeout issues." -Kql @"
+union isfuzzy=true WVDHostRegistration, WVDErrors
+| where TimeGenerated > ago(5m)
+| where CodeSymbolic == "ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@
+
+# Alert: Input device initialization error
+New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-GetInputDeviceHandlesError" -Description "Detects errors initializing input device handles. May indicate driver issues or peripheral compatibility problems." -Kql @"
+union isfuzzy=true WVDHostRegistration, WVDErrors
+| where TimeGenerated > ago(5m)
+| where CodeSymbolic == "GetInputDeviceHandlesError"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@
+
+# Alert: Graphics capabilities not received
+New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-GraphicsCapsNotReceived" -Description "Detects when graphics capabilities are not received during session initialization. May indicate GPU or graphics driver issues." -Kql @"
+union isfuzzy=true WVDHostRegistration, WVDErrors
+| where TimeGenerated > ago(5m)
+| where CodeSymbolic == "GraphicsCapsNotReceived"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@
+
+# Alert: Invalid authentication token
+New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-InvalidAuthToken" -Description "Detects invalid or expired authentication tokens. Indicates authentication token validation failures or token expiration issues." -Kql @"
+union isfuzzy=true WVDHostRegistration, WVDErrors
+| where TimeGenerated > ago(5m)
+| where CodeSymbolic == "InvalidAuthToken"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@
+
+# Alert: Invalid user credentials
+New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-InvalidCredentials" -Description "Detects login attempts with invalid credentials (wrong username or password). Indicates user credential issues or potential security concerns." -Kql @"
+union isfuzzy=true WVDHostRegistration, WVDErrors
+| where TimeGenerated > ago(5m)
+| where CodeSymbolic == "InvalidCredentials"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@
+
+# Alert: Logon type not granted
+New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-LogonTypeNotGranted" -Description "Detects when requested logon type is not granted by policy. User may lack required logon rights or policy restrictions are in place." -Kql @"
+union isfuzzy=true WVDHostRegistration, WVDErrors
+| where TimeGenerated > ago(5m)
+| where CodeSymbolic == "LogonTypeNotGranted"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@
+
+# Alert: User not authorized for logon
+New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-NotAuthorizedForLogon" -Description "Detects users not authorized for logon. May indicate missing logon permissions or policy restrictions preventing access." -Kql @"
+union isfuzzy=true WVDHostRegistration, WVDErrors
+| where TimeGenerated > ago(5m)
+| where CodeSymbolic == "NotAuthorizedForLogon"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@
+
+# Alert: Session host out of memory
+New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-OutOfMemory" -Description "Detects session hosts running out of memory. Critical issue requiring immediate attention - may cause session crashes or prevent new connections." -Kql @"
+union isfuzzy=true WVDHostRegistration, WVDErrors
+| where TimeGenerated > ago(5m)
+| where CodeSymbolic == "OutOfMemory"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@
+
+# Alert: Session host resources unavailable
+New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-SessionHostResourceNotAvailable" -Description "Detects when session host resources are unavailable. May indicate capacity issues, host health problems, or resource exhaustion." -Kql @"
+union isfuzzy=true WVDHostRegistration, WVDErrors
+| where TimeGenerated > ago(5m)
+| where CodeSymbolic == "SessionHostResourceNotAvailable"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@
+
+
 # ----------------------------
 # Export Results to CSV
 # ----------------------------
 if ($AlertResults.Count -gt 0) {
-  $AlertResults | Export-Csv -NoTypeInformation -Path $CsvPath -Force
-  Write-Log "" 
-  Write-Log "Results exported to: $CsvPath" "Green"
+  try {
+    # Validate CSV path
+    $csvDirectory = Split-Path $CsvPath -Parent
+    if ($csvDirectory -and -not (Test-Path $csvDirectory)) {
+      New-Item -ItemType Directory -Path $csvDirectory -Force | Out-Null
+    }
+    
+    $AlertResults | Export-Csv -NoTypeInformation -Path $CsvPath -Force -ErrorAction Stop
+    Write-Log "" 
+    Write-Log "Results exported to: $CsvPath" "Green"
+  }
+  catch {
+    Write-Log "Warning: Failed to export results to CSV: $($_.Exception.Message)" "Yellow"
+    Write-Log "CSV Path attempted: $CsvPath" "Gray"
+  }
 }
 
 # ----------------------------
@@ -350,7 +535,8 @@ Write-Log ""
 Write-Log "=== Summary ===" "Cyan"
 Write-Log "Action Group: $ActionGroupName" "White"
 Write-Log "Email Recipient: $EmailTo" "White"
-Write-Log "Total Alerts: $($AlertResults.Count)" "White"
+Write-Log "Total Alerts Processed: $($AlertResults.Count)" "White"
+Write-Log "" 
 
 $successCount = ($AlertResults | Where-Object Status -eq "Success").Count
 $failedCount = ($AlertResults | Where-Object Status -eq "Failed").Count
@@ -359,11 +545,37 @@ $whatIfCount = ($AlertResults | Where-Object Status -eq "WhatIf").Count
 if ($whatIfCount -gt 0) {
   Write-Log "WhatIf Mode: $whatIfCount alerts would be created/updated" "Yellow"
 } else {
-  Write-Log "Success: $successCount" "Green"
+  Write-Log "=== Alert Statistics ===" "Cyan"
+  Write-Log "Alerts Already Existed: $($ExistingAlerts.Count)" "Yellow"
+  Write-Log "Alerts Newly Created: $($NewlyCreatedAlerts.Count)" "Green"
+  Write-Log "Alerts Updated: $($UpdatedAlerts.Count)" "Cyan"
   if ($failedCount -gt 0) {
     Write-Log "Failed: $failedCount" "Red"
   }
+  
+  if ($ExistingAlerts.Count -gt 0) {
+    Write-Log "" 
+    Write-Log "=== Existing Alerts Detected ===" "Yellow"
+    Write-Log "The following $($ExistingAlerts.Count) alert(s) were updated (already existed):" "Yellow"
+    foreach ($alert in $ExistingAlerts) {
+      Write-Log "  - $alert" "Gray"
+    }
+    Write-Log "" 
+    Write-Log "NOTE: If you want to recreate these alerts from scratch, you can:" "Yellow"
+    Write-Log "1. Delete existing alerts using Azure Portal or Azure CLI" "Yellow"
+    Write-Log "2. Run this PowerShell command to delete all AVD alerts:" "Yellow"
+    Write-Log "" 
+    $deleteCmd = @"
+az monitor scheduled-query list -g $ResourceGroup --query "[?starts_with(name,'AVD-')].name" -o tsv | 
+  ForEach-Object { az monitor scheduled-query delete -g $ResourceGroup -n `$`_ -y }
+"@
+    Write-Log $deleteCmd "Gray"
+    Write-Log "" 
+    Write-Log "3. Re-run this script to create fresh alerts" "Yellow"
+  }
 }
 
+$duration = (Get-Date) - $ScriptStartTime
 Write-Log "" 
+Write-Log "Execution time: $($duration.TotalSeconds.ToString('F1')) seconds" "Gray"
 Write-Log "Done." "Green"
