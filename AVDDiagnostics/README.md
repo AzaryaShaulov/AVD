@@ -72,51 +72,16 @@ WVDConnections
 
 Enabling diagnostic logs for Azure Virtual Desktop is considered a **critical best practice** for the following reasons:
 
-### 1. **Proactive Monitoring & Alerting**
-- Detect issues before users report them
-- Create alerts for failed connections, agent health problems, or resource errors
-- Monitor session host registration failures in real-time
-- Track authentication and authorization failures
-
-### 2. **Troubleshooting & Root Cause Analysis**
-- Investigate user connection failures with detailed error codes
-- Trace the complete user journey from connection attempt to session establishment
-- Correlate events across Host Pools, Application Groups, and Workspaces
-- Analyze patterns in failures to identify systemic issues
-
-### 3. **Security & Compliance**
-- Audit administrative changes to AVD resources
-- Track user access patterns for security analysis
-- Meet compliance requirements for logging and retention (HIPAA, PCI-DSS, SOC 2)
-- Detect anomalous connection patterns or potential security threats
-
-### 4. **Performance Optimization**
-- Identify resource bottlenecks and capacity issues
-- Analyze connection latency and performance metrics
-- Track session host utilization patterns
-- Optimize scaling decisions based on historical data
-
-### 5. **Capacity Planning**
-- Understand usage trends over time
-- Plan for growth based on connection patterns
-- Right-size your AVD deployment
-- Forecast infrastructure needs
-
-### 6. **Cost Management**
-- Track resource utilization to identify underutilized resources
-- Correlate costs with usage patterns
-- Optimize VM sizing and scaling policies
-
-### 7. **Azure Monitor Integration**
-- Build comprehensive dashboards with AVD metrics
-- Integrate with Azure Monitor Workbooks for visualization
-- Create automated remediation workflows
-- Export data to SIEM systems for enterprise-wide monitoring
-
-### 8. **Microsoft Support Requirements**
-- Microsoft Support often requires diagnostic logs for troubleshooting
-- Proactive logging accelerates support case resolution
-- Historical data helps identify intermittent issues
+| Best Practice | Benefits |
+|---------------|----------|
+| **Proactive Monitoring & Alerting** | • Detect issues before users report them<br>• Create alerts for failed connections, agent health problems, or resource errors<br>• Monitor session host registration failures in real-time<br>• Track authentication and authorization failures |
+| **Troubleshooting & Root Cause Analysis** | • Investigate user connection failures with detailed error codes<br>• Trace the complete user journey from connection attempt to session establishment<br>• Correlate events across Host Pools, Application Groups, and Workspaces<br>• Analyze patterns in failures to identify systemic issues |
+| **Security & Compliance** | • Audit administrative changes to AVD resources<br>• Track user access patterns for security analysis<br>• Meet compliance requirements for logging and retention (HIPAA, PCI-DSS, SOC 2)<br>• Detect anomalous connection patterns or potential security threats |
+| **Performance Optimization** | • Identify resource bottlenecks and capacity issues<br>• Analyze connection latency and performance metrics<br>• Track session host utilization patterns<br>• Optimize scaling decisions based on historical data |
+| **Capacity Planning** | • Understand usage trends over time<br>• Plan for growth based on connection patterns<br>• Right-size your AVD deployment<br>• Forecast infrastructure needs |
+| **Cost Management** | • Track resource utilization to identify underutilized resources<br>• Correlate costs with usage patterns<br>• Optimize VM sizing and scaling policies |
+| **Azure Monitor Integration** | • Build comprehensive dashboards with AVD metrics<br>• Integrate with Azure Monitor Workbooks for visualization<br>• Create automated remediation workflows<br>• Export data to SIEM systems for enterprise-wide monitoring |
+| **Microsoft Support Requirements** | • Microsoft Support often requires diagnostic logs for troubleshooting<br>• Proactive logging accelerates support case resolution<br>• Historical data helps identify intermittent issues |
 
 ## Features
 
