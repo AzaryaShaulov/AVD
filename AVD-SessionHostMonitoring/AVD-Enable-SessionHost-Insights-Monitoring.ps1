@@ -36,7 +36,7 @@
   Array of performance counter specifiers to collect.
 
 .PARAMETER WhatIf
-  Preview changes without applying them.
+  Built-in common parameter (SupportsShouldProcess). Preview changes without applying them.
 
 .EXAMPLE
   .\AVD-Enable-SessionHost-Insights-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
@@ -50,7 +50,7 @@
 
 .NOTES
   Requires: Azure CLI with Monitoring Contributor permissions
-  Version: 1.1 (Bug fixes + robustness improvements)
+  Version: 1.2 (Code review fixes)
 
   After running this script, associate the DCR with your AVD session host VMs:
     az monitor data-collection rule association create `
@@ -59,31 +59,38 @@
       --rule-id "<DCR-Id>"
 #>
 
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess = $true)]
 param(
-  [Parameter(Mandatory = $false)]
+  [Parameter(Mandatory = $true)]
   [ValidateNotNullOrEmpty()]
-  [string]$SubscriptionId = "00000000000",
+  [string]$SubscriptionId,
 
   [Parameter(Mandatory = $false)]
+  [ValidateNotNullOrEmpty()]
   [Alias("LawResourceGroup")]
   [string]$LawRG = "AVD-rg",
 
   [Parameter(Mandatory = $false)]
+  [ValidateNotNullOrEmpty()]
   [Alias("LawWorkspace")]
   [string]$LawName = "AVD-Law",
 
   [Parameter(Mandatory = $false)]
-  [string]$DcrRG = "AVD-LAW",
+  [ValidateNotNullOrEmpty()]
+  [string]$DcrRG = "AVD-rg",
 
   [Parameter(Mandatory = $false)]
+  [ValidateNotNullOrEmpty()]
   [string]$DcrName = "AVD-SessionHost-DCR",
 
   [Parameter(Mandatory = $false)]
+  [ValidateNotNullOrEmpty()]
   [string]$Location = "EastUS2",
 
+  [Parameter(Mandatory = $false)]
   [int]$SamplingFrequencyInSeconds = 60,
 
+  [Parameter(Mandatory = $false)]
   [string[]]$CounterSpecifiers = @(
     "\\Processor(_Total)\\% Processor Time",
     "\\Memory\\Available MBytes",
@@ -92,11 +99,9 @@ param(
     "\\LogicalDisk(_Total)\\Avg. Disk sec/Read",
     "\\LogicalDisk(_Total)\\Avg. Disk sec/Write",
     "\\LogicalDisk(_Total)\\Current Disk Queue Length",
-    "\\Network Interface(*)\\Bytes Total/sec",
-    "\\Network Interface(*)\\Output Queue Length"
-  ),
-
-  [switch]$WhatIf
+    "\\Network Adapter(*)\\Bytes Total/sec",
+    "\\Network Adapter(*)\\Output Queue Length"
+  )
 )
 
 $ErrorActionPreference = "Stop"
@@ -186,19 +191,18 @@ $dcrJson = ConvertTo-Json -InputObject $dcrObj -Depth 10
 $tmp = Join-Path $env:TEMP "dcr-$DcrName.json"
 [System.IO.File]::WriteAllText($tmp, $dcrJson, [System.Text.UTF8Encoding]::new($false))
 
-if (-not (Test-Path $tmp) -or ((Get-Item $tmp).Length -eq 0)) {
-  throw "DCR JSON temp file missing or empty: $tmp"
-}
-
 Write-Host "DCR JSON written to: $tmp" -ForegroundColor DarkGray
 
-if ($WhatIf) {
-  Write-Host "[WHATIF] Would create/update DCR: $DcrName in RG: $DcrRG"
-  Remove-Item $tmp -ErrorAction SilentlyContinue
-  return
-}
-
+$DcrId = $null
 try {
+  if (-not (Test-Path $tmp) -or ((Get-Item $tmp).Length -eq 0)) {
+    throw "DCR JSON temp file missing or empty: $tmp"
+  }
+
+  if (-not $PSCmdlet.ShouldProcess("$DcrName in RG $DcrRG", "Create/Update DCR")) {
+    return
+  }
+
   $action = if ($exists) { "Updating" } else { "Creating" }
   Write-Host "$action DCR $DcrName (Perf + InsightsMetrics)..." -ForegroundColor Cyan
 
@@ -213,8 +217,9 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "Failed to create/update DCR: $DcrName" }
 
   # Validate
+  $global:LASTEXITCODE = 0
   $DcrId = az monitor data-collection rule show -g $DcrRG -n $DcrName --query id -o tsv --only-show-errors 2>$null
-  if ([string]::IsNullOrWhiteSpace($DcrId)) { throw "Failed to resolve DCR id after create/update." }
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($DcrId)) { throw "Failed to resolve DCR id after create/update." }
 } finally {
   Remove-Item $tmp -ErrorAction SilentlyContinue
 }
