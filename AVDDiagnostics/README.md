@@ -22,26 +22,29 @@ Azure Virtual Desktop diagnostic logs capture detailed telemetry about your AVD 
 
 ### Critical Log Categories
 
-**Host Pools:**
-- `HostRegistration` - Session host registration events, health status changes
-- `Connection` - User connection attempts, successes, and failures
-- `Error` - Errors occurring at the host pool level
-- `Checkpoint` - Lifecycle events and state transitions
-- `Management` - Administrative operations and configuration changes
-- `AgentHealthStatus` - AVD agent health monitoring
-
-**Application Groups:**
-- `Checkpoint` - Application group lifecycle events
-- `Error` - Application-specific errors
-- `Management` - Application group configuration changes
-
-**Workspaces:**
-- `Checkpoint` - Workspace lifecycle events
-- `Error` - Workspace-level errors
-- `Management` - Workspace configuration changes
-- `Feed` - User feed subscription activities
+| Resource Type | Log Category | Description |
+|---|---|---|
+| Host Pool | `HostRegistration` | Session host registration events and health status changes |
+| Host Pool | `Connection` | User connection attempts, successes, and failures |
+| Host Pool | `Error` | Errors occurring at the host pool level |
+| Host Pool | `Checkpoint` | Lifecycle events and state transitions |
+| Host Pool | `Management` | Administrative operations and configuration changes |
+| Host Pool | `AgentHealthStatus` | AVD agent health monitoring |
+| Application Group | `Checkpoint` | Application group lifecycle events |
+| Application Group | `Error` | Application-specific errors |
+| Application Group | `Management` | Application group configuration changes |
+| Workspace | `Checkpoint` | Workspace lifecycle events |
+| Workspace | `Error` | Workspace-level errors |
+| Workspace | `Management` | Workspace configuration changes |
+| Workspace | `Feed` | User feed subscription activities |
 
 ### Real-World Use Cases
+
+| Scenario | Log Table | Purpose |
+|---|---|---|
+| Troubleshooting Connection Issues | `WVDConnections` | Identify failed user connections in the last 24 hours |
+| Monitoring Agent Health | `WVDAgentHealthStatus` | Detect session hosts in a non-Available state |
+| Tracking User Sessions | `WVDConnections` | Summarize active sessions per user over the last 7 days |
 
 **Troubleshooting Connection Issues:**
 ```kusto
