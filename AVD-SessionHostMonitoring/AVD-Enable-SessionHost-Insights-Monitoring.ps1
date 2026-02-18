@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-  Creates or updates a Data Collection Rule (DCR) for AVD session host monitoring.
+  Creates or updates a Data Collection Rule (DCR) for AVD session host monitoring
+  and automatically associates it with all session hosts in a host pool.
   Repository: https://github.com/AzaryaShaulov/AVD
 
 .DESCRIPTION
@@ -9,7 +10,10 @@
   two performanceCounter data sources — one mapped to Microsoft-InsightsMetrics and
   one mapped to Microsoft-Perf — with both streams flowing to the same LAW destination.
 
-  After the DCR is created, you must associate it with your session host VMs separately.
+  When -HostPoolName and -HostPoolRG are provided, the script automatically enumerates
+  all session hosts in the host pool and associates the DCR with each underlying VM.
+  If those parameters are omitted, the DCR is created but association is skipped and
+  the manual association command is printed instead.
 
 .PARAMETER SubscriptionId
   Azure subscription ID (required).
@@ -29,6 +33,14 @@
 .PARAMETER Location
   Azure region for the DCR (e.g. "eastus2").
 
+.PARAMETER HostPoolName
+  Name of the AVD host pool whose session hosts will be associated with the DCR.
+  When omitted, auto-association is skipped.
+
+.PARAMETER HostPoolRG
+  Resource group containing the AVD host pool.
+  Required when -HostPoolName is specified.
+
 .PARAMETER SamplingFrequencyInSeconds
   How often to sample performance counters. Defaults to 60.
 
@@ -39,24 +51,28 @@
   Built-in common parameter (SupportsShouldProcess). Preview changes without applying them.
 
 .EXAMPLE
+  # Create DCR and auto-associate with all session hosts in a host pool
+  .\AVD-Enable-SessionHost-Insights-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
+    -LawRG "az-infra-eus2" -LawName "AVD-LAW" -DcrRG "az-infra-eus2" `
+    -DcrName "AVD-SessionHost-DCR" -Location "eastus2" `
+    -HostPoolName "AVD-HostPool" -HostPoolRG "az-avd-rg"
+
+.EXAMPLE
+  # Create DCR only (no auto-association)
   .\AVD-Enable-SessionHost-Insights-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
     -LawRG "az-infra-eus2" -LawName "AVD-LAW" -DcrRG "az-infra-eus2" `
     -DcrName "AVD-SessionHost-DCR" -Location "eastus2"
 
 .EXAMPLE
+  # WhatIf preview — no changes applied
   .\AVD-Enable-SessionHost-Insights-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
     -LawRG "az-infra-eus2" -LawName "AVD-LAW" -DcrRG "az-infra-eus2" `
-    -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -WhatIf
+    -DcrName "AVD-SessionHost-DCR" -Location "eastus2" `
+    -HostPoolName "AVD-HostPool" -HostPoolRG "az-avd-rg" -WhatIf
 
 .NOTES
-  Requires: Azure CLI with Monitoring Contributor permissions
-  Version: 1.2 (Code review fixes)
-
-  After running this script, associate the DCR with your AVD session host VMs:
-    az monitor data-collection rule association create `
-      --name "assoc-<DcrName>" `
-      --resource "<VM-Resource-Id>" `
-      --rule-id "<DCR-Id>"
+  Requires: Azure CLI with Monitoring Contributor + Desktop Virtualization Reader permissions
+  Version: 1.3 (Auto-association with host pool session hosts)
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -91,6 +107,12 @@ param(
   [int]$SamplingFrequencyInSeconds = 60,
 
   [Parameter(Mandatory = $false)]
+  [string]$HostPoolName,
+
+  [Parameter(Mandatory = $false)]
+  [string]$HostPoolRG,
+
+  [Parameter(Mandatory = $false)]
   [string[]]$CounterSpecifiers = @(
     "\\Processor(_Total)\\% Processor Time",
     "\\Memory\\Available MBytes",
@@ -105,6 +127,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Validate host pool parameter combination
+if ($HostPoolName -and -not $HostPoolRG) {
+  throw "-HostPoolRG is required when -HostPoolName is specified."
+}
+if ($HostPoolRG -and -not $HostPoolName) {
+  throw "-HostPoolName is required when -HostPoolRG is specified."
+}
 
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
   throw "Azure CLI (az) not found. Please install and try again."
@@ -125,6 +155,7 @@ $LawId = az monitor log-analytics workspace show -g $LawRG -n $LawName --query i
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($LawId)) {
   throw "Could not resolve LAW workspace $LawName in RG $LawRG"
 }
+$LawId = $LawId.Trim()
 
 # Check if DCR exists (distinguish ResourceNotFound from other errors)
 $exists = $true
@@ -220,6 +251,7 @@ try {
   $global:LASTEXITCODE = 0
   $DcrId = az monitor data-collection rule show -g $DcrRG -n $DcrName --query id -o tsv --only-show-errors 2>$null
   if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($DcrId)) { throw "Failed to resolve DCR id after create/update." }
+  $DcrId = $DcrId.Trim()
 } finally {
   Remove-Item $tmp -ErrorAction SilentlyContinue
 }
@@ -227,11 +259,74 @@ try {
 Write-Host "DCR ready: $DcrName" -ForegroundColor Green
 Write-Host "DCR Id: $DcrId"
 Write-Host ""
-Write-Host "Next: associate this DCR with your AVD session host VMs:" -ForegroundColor Yellow
-Write-Host "  az monitor data-collection rule association create ``"
-Write-Host "    --name 'assoc-$DcrName' ``"
-Write-Host "    --resource '<VM-Resource-Id>' ``"
-Write-Host "    --rule-id '$DcrId'"
+
+# -------------------------
+# Associate DCR with all session hosts in the host pool
+# -------------------------
+if ($HostPoolName) {
+  Write-Host "Enumerating session hosts in host pool: $HostPoolName..." -ForegroundColor Cyan
+
+  # Ensure the desktopvirtualization CLI extension is present
+  $global:LASTEXITCODE = 0
+  az extension show --name desktopvirtualization -o none 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Installing required Azure CLI extension: desktopvirtualization..." -ForegroundColor DarkGray
+    az extension add --name desktopvirtualization --only-show-errors
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install 'desktopvirtualization' Azure CLI extension." }
+  }
+
+  $global:LASTEXITCODE = 0
+  $vmIdsRaw = az desktopvirtualization sessionhost list `
+    -g $HostPoolRG `
+    --host-pool-name $HostPoolName `
+    --query "[].properties.resourceId" `
+    -o tsv --only-show-errors 2>$null
+
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vmIdsRaw)) {
+    Write-Warning "Could not enumerate session hosts from host pool '$HostPoolName'. Skipping auto-association."
+  } else {
+    $vmIds = ($vmIdsRaw -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+    Write-Host "Found $($vmIds.Count) session host(s). Associating DCR..." -ForegroundColor Cyan
+
+    $assocName  = "assoc-$DcrName"
+    $successCount = 0
+    $failCount    = 0
+
+    foreach ($vmId in $vmIds) {
+      $vmName = ($vmId -split '/')[-1]
+
+      if (-not $PSCmdlet.ShouldProcess($vmName, "Associate DCR '$DcrName'")) {
+        continue
+      }
+
+      Write-Host "  Associating: $vmName" -ForegroundColor Gray
+      $global:LASTEXITCODE = 0
+      az monitor data-collection rule association create `
+        --name $assocName `
+        --resource $vmId `
+        --rule-id $DcrId `
+        --only-show-errors `
+        -o none 2>$null
+
+      if ($LASTEXITCODE -ne 0) {
+        Write-Warning "  Failed to associate DCR with $vmName"
+        $failCount++
+      } else {
+        $successCount++
+      }
+    }
+
+    $assocColor = if ($failCount -gt 0) { 'Yellow' } else { 'Green' }
+    Write-Host "Association complete: $successCount succeeded, $failCount failed." -ForegroundColor $assocColor
+  }
+} else {
+  Write-Host "No host pool specified. To associate this DCR with session hosts, run:" -ForegroundColor Yellow
+  Write-Host "  az monitor data-collection rule association create ``"
+  Write-Host "    --name 'assoc-$DcrName' ``"
+  Write-Host "    --resource '<VM-Resource-Id>' ``"
+  Write-Host "    --rule-id '$DcrId'"
+}
+
 Write-Host ""
 Write-Host "After 5-15 minutes, you should see data in BOTH tables:"
 Write-Host "  - InsightsMetrics"
