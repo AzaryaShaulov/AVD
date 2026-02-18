@@ -94,7 +94,7 @@ Enabling diagnostic logs for Azure Virtual Desktop is considered a **critical be
 
 ## Prerequisites
 
-- Azure CLI installed ([Install guide](https://docs.microsoft.com/cli/azure/install-azure-cli))
+- Azure CLI installed ([Install guide](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli))
 - Azure account with **Monitoring Contributor** permissions
 - PowerShell 5.1 or later
 - Active Azure subscription with AVD resources
@@ -108,18 +108,18 @@ Enabling diagnostic logs for Azure Virtual Desktop is considered a **critical be
 
 2. **Run the script:**
    ```powershell
-   .\AvdDiag-minimal.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
+   .\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
    ```
 
 ## Parameters
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `SubscriptionId` | No | `00000000-0000-0000-0000-000000000000` | Azure subscription ID |
+| `SubscriptionId` | **Yes** | — | Azure subscription ID |
 | `WorkspaceName` | No | `AVD-LAW` | Log Analytics workspace name |
 | `WorkspaceResourceGroup` | No | `az-infra-eus2` | Resource group containing the workspace |
 | `DiagnosticSettingName` | No | `AVD-Diagnostics` | Name for diagnostic settings |
-| `CsvPath` | No | `.\avd-diagnostics-minimal.csv` | Path for CSV export |
+| `CsvPath` | No | `avd-diagnostics-minimal.csv` (script directory) | Path for CSV export |
 | `CheckOnly` | No | (switch) | Check status without making changes |
 
 ## Usage Examples
@@ -127,13 +127,13 @@ Enabling diagnostic logs for Azure Virtual Desktop is considered a **critical be
 ### Check Current Status
 Review diagnostic settings without making any changes:
 ```powershell
-.\AvdDiag-minimal.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID" -CheckOnly
+.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID" -CheckOnly
 ```
 
 ### Configure with Custom Workspace
 Apply diagnostic settings using a specific Log Analytics workspace:
 ```powershell
-.\AvdDiag-minimal.ps1 `
+.\AVD-EnableDiagnosticLogs.ps1 `
     -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
     -WorkspaceName "MyCustomLAW" `
     -WorkspaceResourceGroup "MyResourceGroup"
@@ -142,29 +142,16 @@ Apply diagnostic settings using a specific Log Analytics workspace:
 ### Run with Default Settings
 Use default workspace values:
 ```powershell
-.\AvdDiag-minimal.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
+.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
 ```
 
 ## Output
 
-The script provides:
-
-1. **Console Output:** Color-coded status messages for each resource
-   - 🟢 Green: Success
-   - 🟡 Yellow: Skipped or warnings
-   - 🔴 Red: Errors
-
-2. **CSV Report:** Detailed results exported to the specified CSV path
-   - Resource name and type
-   - Configuration status
-   - Actions taken
-   - Any errors encountered
-
-3. **Summary Statistics:**
-   - Total resources found
-   - Successfully configured
-   - Skipped (already configured)
-   - Failed
+| Output Type | Details |
+|---|---|
+| **Console Output** | Color-coded status per resource: 🟢 Success · 🟡 Skipped/Warning · 🔴 Error |
+| **CSV Report** | Exported to `CsvPath`; includes resource name & type, configuration status, actions taken, errors |
+| **Summary Statistics** | Totals for: resources found, successfully configured, skipped (already configured), failed |
 
 ## Status Indicators
 
@@ -177,17 +164,12 @@ The script provides:
 
 ## Troubleshooting
 
-### "Failed to set subscription"
-Ensure you're logged in: `az login`
-
-### "Log Analytics Workspace not found"
-Verify the workspace name and resource group are correct.
-
-### "Conflict detected"
-Another diagnostic setting is already sending logs to the same workspace. Remove duplicate settings or use a different diagnostic setting name.
-
-### Permission Errors
-Ensure your account has **Monitoring Contributor** role on the resources.
+| Error / Issue | Resolution |
+|---|---|
+| `Failed to set subscription` | Run `az login` to authenticate before executing the script |
+| `Log Analytics Workspace not found` | Verify `-WorkspaceName` and `-WorkspaceResourceGroup` parameter values |
+| `Conflict detected` | A duplicate diagnostic setting exists for the same workspace — remove it or use a different `-DiagnosticSettingName` |
+| Permission errors | Ensure your account has **Monitoring Contributor** on the AVD resources and the Log Analytics workspace |
 
 ## Resource Types Supported
 
@@ -198,41 +180,45 @@ Ensure your account has **Monitoring Contributor** role on the resources.
 ## Data Retention & Cost Considerations
 
 ### Log Analytics Retention
-- **Default retention:** 30 days (free)
-- **Extended retention:** Up to 730 days (additional cost applies)
-- Configure retention in Log Analytics workspace settings
-- Consider archive policies for long-term compliance needs
+
+| Setting | Detail |
+|---|---|
+| Default retention | 30 days (included free) |
+| Extended retention | Up to 730 days (additional cost applies) |
+| Archive policies | Recommended for long-term compliance needs |
 
 ### Cost Optimization Tips
-1. **Use allLogs category** - Simplifies configuration without missing critical data
-2. **Set appropriate retention** - Balance compliance needs with storage costs
-3. **Query efficiently** - Use time ranges and filters to minimize data processing
-4. **Archive old data** - Move aged logs to cheaper storage tiers
-5. **Monitor ingestion rates** - Track daily log volume in Log Analytics workspace
 
-### Estimated Costs
-Diagnostic logs for AVD typically generate:
-- **Small environment** (< 50 users): ~1-2 GB/month
-- **Medium environment** (50-200 users): ~5-10 GB/month
-- **Large environment** (> 200 users): ~20+ GB/month
+| Tip | Why |
+|---|---|
+| Use `allLogs` category | Simplifies configuration without missing critical data |
+| Set appropriate retention | Balance compliance requirements with storage costs |
+| Query efficiently | Apply time ranges and filters to minimize data processing charges |
+| Archive old data | Move aged logs to cheaper storage tiers |
+| Monitor ingestion rates | Track daily log volume in the Log Analytics workspace |
 
-*Actual costs depend on user activity, connection frequency, and error rates.*
+### Estimated Monthly Log Volume
+
+| Environment Size | Users | Estimated Volume |
+|---|---|---|
+| Small | < 50 | ~1–2 GB/month |
+| Medium | 50–200 | ~5–10 GB/month |
+| Large | > 200 | ~20+ GB/month |
+
+*Actual volume depends on user activity, connection frequency, and error rates.*
 
 ## Additional Resources
 
-### Microsoft Documentation
-- [Azure Virtual Desktop Diagnostics Overview](https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics)
-- [Use Log Analytics for Diagnostics](https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics)
-- [Azure Monitor Diagnostic Settings](https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings)
-- [AVD Required URLs](https://learn.microsoft.com/en-us/azure/virtual-desktop/safe-url-list)
-
-### Related Tools in This Repository
-- **[AVD Alerts Script](../AVD-Alerts/)** - Automated alerting for AVD error conditions
-- **[AVD Monitoring Workbook](https://learn.microsoft.com/en-us/azure/virtual-desktop/insights)** - Built-in Azure Monitor insights
-
-### Community Resources
-- [AVD Tech Community](https://techcommunity.microsoft.com/t5/azure-virtual-desktop/bd-p/AzureVirtualDesktopForum)
-- [AVD GitHub Samples](https://github.com/Azure/RDS-Templates/tree/master/wvd-templates)
+| Category | Resource | Description |
+|---|---|---|
+| Microsoft Docs | [AVD Diagnostics Overview](https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics) | Official diagnostics & Log Analytics guide |
+| Microsoft Docs | [Azure Monitor Diagnostic Settings](https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings) | Diagnostic settings reference |
+| Microsoft Docs | [AVD Required URLs](https://learn.microsoft.com/en-us/azure/virtual-desktop/safe-url-list) | Firewall & network requirements |
+| This Repo | [AVD Alerts Script](../AVD-Alerts/) | Automated alerting for AVD error conditions |
+| This Repo | [AVD Session Host Monitoring](../AVD-SessionHostMonitoring/) | DCR-based performance counter collection |
+| Azure | [AVD Insights Workbook](https://learn.microsoft.com/en-us/azure/virtual-desktop/insights) | Built-in Azure Monitor workbook for AVD |
+| Community | [AVD Tech Community](https://techcommunity.microsoft.com/t5/azure-virtual-desktop/bd-p/AzureVirtualDesktopForum) | Microsoft Tech Community forum |
+| Community | [AVD GitHub Samples](https://github.com/Azure/RDS-Templates/tree/master/wvd-templates) | Official ARM/Bicep deployment templates |
 
 ## Best Practice Checklist
 
