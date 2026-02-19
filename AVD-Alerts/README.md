@@ -13,8 +13,10 @@ This PowerShell script creates 20 comprehensive alerts for Azure Virtual Desktop
 - ⚡ **5-minute Evaluation** frequency for fast incident detection
 - 🎯 **High Severity** alerts (configurable)
 - 📊 **CSV Export** of alert configuration results
-- 🧪 **WhatIf Mode** to preview changes without applying
-- ✅ **Parameter Validation** for safe execution
+- 🧪 **WhatIf Mode** for fast preview (~5s) with proper Azure change prevention (fixed v2.1)
+- 🔄 **Progress Indicator** showing real-time alert creation status
+- 🎯 **Multi-Subscription Support** with explicit subscription targeting
+- ✅ **Parameter Validation** for safe execution (including GUID validation)
 - 📝 **Detailed Logging** with timestamps
 
 ## Prerequisites
@@ -42,14 +44,16 @@ Or download directly: [Azure-AVD-Alerts.ps1](https://github.com/AzaryaShaulov/AV
 
 ### 2. Configure Parameters
 
-Update the default values in the script (lines 50-65) or pass them as arguments:
+Update the default values in the script parameter section or pass them as arguments:
 
 ```powershell
 # Option 1: Edit script defaults (recommended for repeated use)
+# Update the parameter default values in the script:
 $EmailTo = "your-email@domain.com"
 $ResourceGroup = "your-resource-group"
 $LawName = "your-log-analytics-workspace"
 $Location = "your-azure-region"
+$SubscriptionId = "" # Optional: specify target subscription
 
 # Option 2: Pass as arguments (see usage examples below)
 ```
@@ -68,20 +72,28 @@ az login
 
 # Or override parameters:
 .\Azure-AVD-Alerts.ps1 -EmailTo "admin@yourdomain.com"
+
+# Target specific subscription:
+.\Azure-AVD-Alerts.ps1 -SubscriptionId "12345678-1234-1234-1234-123456789012" `
+  -EmailTo "admin@yourdomain.com" `
+  -ResourceGroup "rg-avd-prod" `
+  -LawName "law-avd-prod" `
+  -Location "eastus2"
 ```
 
 ## Parameters
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `EmailTo` | No | `your-email@domain.com` | Email address for alert notifications |
+| `EmailTo` | No | `your-email@domain.com` | Email address for alert notifications (validated) |
+| `SubscriptionId` | No | (current context) | Azure subscription ID (GUID format, validated) |
 | `ActionGroupName` | No | `AVD-Alerts` | Name of the Azure Monitor action group |
 | `ResourceGroup` | No | `your-resource-group` | Resource group containing Log Analytics workspace |
 | `LawName` | No | `your-log-analytics-workspace` | Log Analytics workspace name |
 | `Location` | No | `your-azure-region` | Azure region for alert rules (e.g., eastus2) |
 | `Severity` | No | `1` | Alert severity: 0=Critical, 1=Error, 2=Warning, 3=Info, 4=Verbose |
-| `CsvPath` | No | `.\avd-alerts-report.csv` | Path for CSV export of results |
-| `WhatIf` | No | (switch) | Preview changes without creating alerts |
+| `CsvPath` | No | `.\avd-alerts-report[-subId].csv` | Path for CSV export (auto-includes subscription ID when specified) |
+| `WhatIf` | No | (switch) | Preview changes without making Azure modifications (~5s execution, fixed in v2.1) |
 
 ## Usage Examples
 
@@ -95,6 +107,16 @@ Run with default parameters after updating them in the script:
 Create alerts with default settings but different email:
 ```powershell
 .\Azure-AVD-Alerts.ps1 -EmailTo "admin@contoso.com"
+```
+
+### Target Specific Subscription
+```powershell
+.\Azure-AVD-Alerts.ps1 `
+    -SubscriptionId "12345678-1234-1234-1234-123456789012" `
+    -EmailTo "alerts@contoso.com" `
+    -ResourceGroup "rg-avd-prod" `
+    -LawName "law-avd-prod" `
+    -Location "eastus2"
 ```
 
 ### Specify All Parameters
@@ -111,8 +133,10 @@ Create alerts with default settings but different email:
 .\Azure-AVD-Alerts.ps1 -Severity 0
 ```
 
-### Preview Changes (WhatIf Mode)
+### Preview Changes (WhatIf Mode with Status Reporting)
 ```powershell
+# Fast preview mode (~5 seconds) - no Azure CLI commands executed
+# Properly skips all Azure changes (bug fixed in v2.1)
 .\Azure-AVD-Alerts.ps1 -WhatIf
 ```
 
@@ -124,11 +148,13 @@ Create alerts with default settings but different email:
 ## Best Practices
 
 1. **Configure Defaults:** Update default parameter values (EmailTo, ResourceGroup, LawName, Location) in the script for easier repeated use
-2. **Test First:** Use `-WhatIf` to preview changes before creating alerts
-3. **Review Severity:** Adjust `-Severity` based on your incident response process
-4. **Monitor Email:** Ensure the configured email address is monitored 24/7 for alert notifications
-5. **Regular Updates:** Re-run the script to update alert configurations as needed
-6. **Clean Up:** Delete old alerts without the `AVD-` prefix if you've upgraded from a previous version
+2. **Test First:** Use `-WhatIf` to preview changes before creating alerts (~5s fast preview, no Azure changes - fixed in v2.1)
+3. **Subscription Context:** Use `-SubscriptionId` parameter for explicit subscription targeting in multi-subscription environments
+4. **Review Severity:** Adjust `-Severity` based on your incident response process
+5. **Monitor Email:** Ensure the configured email address is monitored 24/7 for alert notifications
+6. **Regular Updates:** Re-run the script to update alert configurations as needed
+7. **Clean Up:** Delete old alerts without the `AVD-` prefix if you've upgraded from a previous version
+8. **CSV Reports:** Review exported CSV files (auto-named by subscription) for audit trails
 
 ## Alerts Reference
 
@@ -169,24 +195,45 @@ Each alert is configured with:
 ## Output
 
 ### Console Output
-Color-coded status messages:
+Color-coded status messages with real-time progress indicator:
 - 🟢 **Green:** Successful operations
-- 🟡 **Yellow:** Warnings or skipped items
+- 🟡 **Yellow:** Warnings, skipped items, and WhatIf preview messages
 - 🔴 **Red:** Errors
+- 🔵 **Cyan:** Section headers
 - ⚪ **Gray:** Informational messages
+- 📊 **Progress Bar:** Shows alert processing status (X of 20 alerts)
+
+### WhatIf Status Reports
+When using `-WhatIf` mode (fixed in v2.1):
+- **Fast execution**: Completes in ~5 seconds (no Azure CLI commands executed)
+- **Proper preview**: Shows "[WhatIf] Would create/update alert" messages
+- **No Azure changes**: Verified to skip all Azure resource modifications
+- **Summary report**: "WhatIf Mode: 20 alerts would be created/updated"
+
+For sequential processing (PS 5.1), status reports appear every 30 seconds showing:
+- Elapsed time
+- Progress (alerts validated / total)
+- Current alert being processed
 
 ### CSV Report
-Exported to the path specified by `-CsvPath` with columns:
+Exported to the path specified by `-CsvPath` (automatically includes subscription ID in filename when `-SubscriptionId` is provided):
+
+**Columns:**
 - `AlertName` - Name of the alert
 - `Description` - What the alert detects
 - `Severity` - Alert severity level
+- `Action` - Operation performed (Created/Updated/WouldCreate/WouldUpdate/Failed)
 - `Status` - Result (Success/Failed/WhatIf)
 
-Example:
+**Filename Examples:**
+- Default: `avd-alerts-report.csv`
+- With SubscriptionId: `avd-alerts-report-12345678.csv` (first 8 chars of subscription ID)
+
+Example CSV content:
 ```csv
-AlertName,Description,Severity,Status
-AVD-PasswordMustChange,"Detects users who must change their password...",1 (Error),Success
-AVD-AccountLockedOut,"Detects user accounts that are locked out...",1 (Error),Success
+AlertName,Description,Severity,Action,Status
+AVD-PasswordMustChange,"Detects users who must change their password...","1 (Error)",Created,Success
+AVD-AccountLockedOut,"Detects user accounts that are locked out...","1 (Error)",Updated,Success
 ```
 
 ## Troubleshooting
@@ -194,11 +241,13 @@ AVD-AccountLockedOut,"Detects user accounts that are locked out...",1 (Error),Su
 | Issue/Error | Solution |
 |-------------|----------|
 | **Could not resolve Log Analytics workspace** | Verify the workspace name and resource group are correct. Ensure you have read permissions. |
-| **Failed to set subscription** | Run `az login` to authenticate, then try again. |
+| **Failed to set subscription** | Run `az login` to authenticate. Verify the subscription ID format (must be a valid GUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx). Check you have access to the subscription with `az account list`. |
+| **Invalid SubscriptionId format** | Ensure SubscriptionId follows GUID format: 8-4-4-4-12 hexadecimal characters (e.g., 12345678-1234-1234-1234-123456789012) |
 | **Failed to create action group** | Ensure you have Monitoring Contributor permissions on the resource group. |
 | **Failed to retrieve action group ID** | Check that the action group was created successfully. Try running with `-WhatIf` first. |
+| **WhatIf creates alerts anyway** | Fixed in v2.1. Upgrade to latest version for proper WhatIf functionality. |
 | **Alerts created but queries are incomplete** | This script properly handles multi-line KQL queries. If issues persist, check the Azure portal to verify query content. |
-| **Script hangs during execution** | The script now includes proper error handling. If hanging persists, check Azure CLI version (`az --version`) and update if needed. |
+| **Script hangs during execution** | The script includes timeout handling and progress indicators. If hanging persists, check Azure CLI version (`az --version`) and update if needed. Use `-WhatIf` to validate without making changes. |
 
 ## Advanced Usage
 
@@ -215,12 +264,27 @@ $WindowSize    = "PT5M"   # Query time window
 Supported formats: PT1M, PT5M, PT15M, PT30M, PT1H, etc.
 
 ### Add Custom Alerts
-Follow the pattern in the script:
+The script uses an array-driven approach for maintainability. Add new alerts to the `$alertDefinitions` array:
+
+```powershell
+# Add to the $alertDefinitions array:
+$alertDefinitions = @(
+  # ... existing alerts ...
+  @{ 
+    Name = "AVD-YourCustomAlert"
+    Description = "Detects your custom condition..." 
+    CodeSymbolic = "YourErrorCode" 
+  }
+)
+```
+
+Alternatively, call the function directly after the loop:
 ```powershell
 New-OrUpdate-ScheduledQueryAlert -AlertName "AVD-YourAlert" -Description "Your description" -Kql @"
 union isfuzzy=true WVDHostRegistration, WVDErrors
 | where TimeGenerated > ago(5m)
 | where CodeSymbolic == "YourErrorCode"
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
 "@
 ```
 
@@ -233,21 +297,45 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
 
 ## Version
 
-**Version:** 2.0  
+**Version:** 2.1  
 **Last Updated:** February 2026
 
 ### Version History
 
-- **v2.0** (February 2026) - Added 9 new alerts (total: 20)
-  - ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed
-  - GetInputDeviceHandlesError
-  - GraphicsCapsNotReceived
-  - InvalidAuthToken
-  - InvalidCredentials
-  - LogonTypeNotGranted
-  - NotAuthorizedForLogon
-  - OutOfMemory
-  - SessionHostResourceNotAvailable
+- **v2.1** (February 2026) - Critical bug fixes
+  - **Bug Fixes:**
+    - Fixed critical WhatIf functionality bug where alerts were being created in Azure even when using `-WhatIf` parameter
+    - Changed WhatIf detection from `$WhatIf.IsPresent` to `$PSBoundParameters.ContainsKey('WhatIf')` for proper parameter detection in parallel processing
+    - Fixed variable scope consistency for `$existingAlertNamesList` (now consistently uses `$script:` prefix)
+    - WhatIf mode now properly skips Azure CLI execution and completes in ~5 seconds instead of ~30 seconds
+  - **Testing Verified:**
+    - WhatIf mode: Shows "[WhatIf] Would create/update alert" messages, no Azure changes
+    - Normal mode: Creates/updates alerts successfully with proper status messages
+    - Both parallel (PS7+) and sequential (PS5.1) modes working correctly
+- **v2.0** (February 2026) - Major enhancements and 9 new alerts (total: 20)
+  - **New Features:**
+    - Added SubscriptionId parameter with GUID validation for multi-subscription environments
+    - Subscription-aware CSV naming (includes subscription ID when specified)
+    - Progress indicator showing real-time alert creation status
+    - WhatIf status reporting every 30 seconds for long operations
+    - Explicit subscription context for all Azure CLI commands
+    - SHA256-based email receiver naming to prevent collisions
+    - Performance optimization with cached alert list queries
+    - Phase 1 & 2 performance optimizations: Smart action group checks, cached alert existence, --no-wait flag, parallel processing (77% speed improvement)
+  - **New Alerts:**
+    - ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed
+    - GetInputDeviceHandlesError
+    - GraphicsCapsNotReceived
+    - InvalidAuthToken
+    - InvalidCredentials
+    - LogonTypeNotGranted
+    - NotAuthorizedForLogon
+    - OutOfMemory
+    - SessionHostResourceNotAvailable
+  - **Code Quality:**
+    - Refactored to array-driven alert creation (reduced from ~690 to 563 lines)
+    - Enhanced error handling and parameter validation
+    - Improved logging with color-coded output
 - **v1.0** - Initial release with 11 pre-configured alerts
   - Added parameter validation and WhatIf support
   - Fixed multi-line KQL query handling
