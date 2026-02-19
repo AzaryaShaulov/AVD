@@ -19,7 +19,7 @@ This PowerShell script creates 20 comprehensive alerts for Azure Virtual Desktop
 
 ## Prerequisites
 
-- **Azure CLI** installed and configured ([Installation Guide](https://docs.microsoft.com/cli/azure/install-azure-cli))
+- **Azure CLI** installed and configured ([Installation Guide](https://learn.microsoft.com/cli/azure/install-azure-cli))
 - **PowerShell 5.1** or later
 - **Azure Permissions:**
   - Monitoring Contributor role on the resource group
@@ -121,6 +121,15 @@ Create alerts with default settings but different email:
 .\Azure-AVD-Alerts.ps1 -CsvPath "C:\Reports\avd-alerts.csv"
 ```
 
+## Best Practices
+
+1. **Configure Defaults:** Update default parameter values (EmailTo, ResourceGroup, LawName, Location) in the script for easier repeated use
+2. **Test First:** Use `-WhatIf` to preview changes before creating alerts
+3. **Review Severity:** Adjust `-Severity` based on your incident response process
+4. **Monitor Email:** Ensure the configured email address is monitored 24/7 for alert notifications
+5. **Regular Updates:** Re-run the script to update alert configurations as needed
+6. **Clean Up:** Delete old alerts without the `AVD-` prefix if you've upgraded from a previous version
+
 ## Alerts Reference
 
 The script creates **20 comprehensive alerts** with the `AVD-` prefix. Each alert monitors specific AVD error conditions and sends email notifications when issues occur.
@@ -147,14 +156,6 @@ The script creates **20 comprehensive alerts** with the `AVD-` prefix. Each aler
 | **UnloadWaitingForUserAction** | Detects when FSLogix profile unload is delayed waiting for user action. User may have unsaved work or active processes blocking logoff. | • Identifying applications preventing clean logoff<br>• Detecting unsaved work blocking session termination<br>• Monitoring profile disconnect/logoff processes | [FSLogix Profile Container](https://learn.microsoft.com/fslogix/profile-container-configuration-reference)<br>[Configure Profile Container Settings](https://learn.microsoft.com/fslogix/configure-profile-container-tutorial) |
 | **InputDeviceHandlesError** | Detects errors initializing input device handles. May indicate driver issues or peripheral compatibility problems. | • Troubleshooting keyboard/mouse redirection issues<br>• Detecting device driver problems<br>• Monitoring peripheral compatibility | [Device Redirection](https://learn.microsoft.com/azure/virtual-desktop/configure-device-redirections)<br>[Supported RDP Properties](https://learn.microsoft.com/azure/virtual-desktop/rdp-properties) |
 | **GraphicsCapsNotReceived** | Detects when graphics capabilities are not received during session initialization. May indicate GPU or graphics driver issues. | • Monitoring GPU acceleration problems<br>• Detecting graphics driver issues<br>• Troubleshooting multimedia redirection | [GPU Acceleration for AVD](https://learn.microsoft.com/azure/virtual-desktop/configure-vm-gpu)<br>[Multimedia Redirection](https://learn.microsoft.com/azure/virtual-desktop/multimedia-redirection) |
-
-## Additional Resources
-
-- [Azure Virtual Desktop Documentation](https://learn.microsoft.com/azure/virtual-desktop/)
-- [AVD Troubleshooting Overview](https://learn.microsoft.com/azure/virtual-desktop/troubleshoot-overview)
-- [Monitor AVD with Azure Monitor](https://learn.microsoft.com/azure/virtual-desktop/monitor-azure-virtual-desktop)
-- [AVD Diagnostics with Log Analytics](https://learn.microsoft.com/azure/virtual-desktop/diagnostics-log-analytics)
-- [AVD Error Code Reference](https://learn.microsoft.com/azure/virtual-desktop/troubleshoot-set-up-overview)
 
 ## Alert Configuration
 
@@ -199,15 +200,6 @@ AVD-AccountLockedOut,"Detects user accounts that are locked out...",1 (Error),Su
 | **Alerts created but queries are incomplete** | This script properly handles multi-line KQL queries. If issues persist, check the Azure portal to verify query content. |
 | **Script hangs during execution** | The script now includes proper error handling. If hanging persists, check Azure CLI version (`az --version`) and update if needed. |
 
-## Best Practices
-
-1. **Configure Defaults:** Update default parameter values (EmailTo, ResourceGroup, LawName, Location) in the script for easier repeated use
-2. **Test First:** Use `-WhatIf` to preview changes before creating alerts
-3. **Review Severity:** Adjust `-Severity` based on your incident response process
-4. **Monitor Email:** Ensure the configured email address is monitored 24/7 for alert notifications
-5. **Regular Updates:** Re-run the script to update alert configurations as needed
-6. **Clean Up:** Delete old alerts without the `AVD-` prefix if you've upgraded from a previous version
-
 ## Advanced Usage
 
 ### Update Existing Alerts
@@ -239,9 +231,14 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
 - AVD diagnostic logs configured to send to Log Analytics
 - WVDHostRegistration and WVDErrors tables available in Log Analytics
 
-## Version History
+## Version
 
-- **v2.0** - Added 9 new alerts (total: 20)
+**Version:** 2.0  
+**Last Updated:** February 2026
+
+### Version History
+
+- **v2.0** (February 2026) - Added 9 new alerts (total: 20)
   - ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed
   - GetInputDeviceHandlesError
   - GraphicsCapsNotReceived
@@ -252,10 +249,10 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
   - OutOfMemory
   - SessionHostResourceNotAvailable
 - **v1.0** - Initial release with 11 pre-configured alerts
-- Added parameter validation and WhatIf support
-- Fixed multi-line KQL query handling
-- Added AVD- prefix to alert names
-- Improved error handling and logging
+  - Added parameter validation and WhatIf support
+  - Fixed multi-line KQL query handling
+  - Added AVD- prefix to alert names
+  - Improved error handling and logging
 
 ## Contributing
 
@@ -268,6 +265,28 @@ Contributions are welcome! Please ensure:
 ## License
 
 See [LICENSE](../LICENSE) file for details.
+
+## Disclaimer
+
+**THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.**
+
+This script is provided as-is under the MIT License. The authors and contributors:
+
+- **Make no warranties or guarantees** about the functionality, reliability, or suitability of this script for any purpose
+- **Accept no responsibility or liability** for any damages, data loss, service interruptions, or other issues arising from the use of this script
+- **Provide no support or maintenance** obligations, though community contributions are welcome
+- **Recommend thorough testing** in a non-production environment before deploying to production systems
+
+### Important Notes:
+
+- ⚠️ **Test First**: Always test in a development/staging environment before running in production
+- ⚠️ **Email Configuration**: Verify alert email addresses are correct to avoid missing critical notifications
+- ⚠️ **Permissions**: Review required Azure RBAC permissions before execution
+- ⚠️ **Alert Fatigue**: Configure appropriate severity levels to prevent alert fatigue
+- ⚠️ **Costs**: Understand Azure Monitor alert pricing before deploying at scale
+- ⚠️ **Compliance**: Verify this solution meets your organization's security and compliance requirements
+
+**By using this script, you acknowledge and accept these terms and assume all risks associated with its use.**
 
 ## Related Scripts
 
@@ -282,6 +301,11 @@ For issues or questions:
 
 ## Additional Resources
 
-- [Azure Monitor Scheduled Query Alerts](https://docs.microsoft.com/azure/azure-monitor/alerts/alerts-unified-log)
-- [Azure Virtual Desktop Diagnostics](https://docs.microsoft.com/azure/virtual-desktop/diagnostics-log-analytics)
-- [Azure CLI Reference](https://docs.microsoft.com/cli/azure/monitor/scheduled-query)
+- [Azure Monitor Scheduled Query Alerts](https://learn.microsoft.com/azure/azure-monitor/alerts/alerts-unified-log)
+- [Azure Virtual Desktop Diagnostics](https://learn.microsoft.com/azure/virtual-desktop/diagnostics-log-analytics)
+- [Azure CLI Reference](https://learn.microsoft.com/cli/azure/monitor/scheduled-query)
+- [Azure Virtual Desktop Documentation](https://learn.microsoft.com/azure/virtual-desktop/)
+- [AVD Troubleshooting Overview](https://learn.microsoft.com/azure/virtual-desktop/troubleshoot-overview)
+- [Monitor AVD with Azure Monitor](https://learn.microsoft.com/azure/virtual-desktop/monitor-azure-virtual-desktop)
+- [AVD Diagnostics with Log Analytics](https://learn.microsoft.com/azure/virtual-desktop/diagnostics-log-analytics)
+- [AVD Error Code Reference](https://learn.microsoft.com/azure/virtual-desktop/troubleshoot-set-up-overview)

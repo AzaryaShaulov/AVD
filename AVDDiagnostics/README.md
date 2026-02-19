@@ -1,7 +1,5 @@
 # AVD Diagnostics Configuration Tool
 
-A PowerShell script to automatically configure Azure Monitor diagnostic settings for Azure Virtual Desktop (AVD) resources.
-
 ## Overview
 
 This tool discovers AVD resources in your Azure subscription and configures diagnostic settings to send logs and metrics to a Log Analytics workspace. It enforces the use of `allLogs` category group wherever supported for comprehensive logging.
@@ -103,6 +101,15 @@ Enabling diagnostic logs for Azure Virtual Desktop is considered a **critical be
 - Active Azure subscription with AVD resources
 
 ## Quick Start
+## Best Practice Checklist
+
+Before running this script, ensure:
+- [ ] Log Analytics workspace exists and is properly sized
+- [ ] You have Monitoring Contributor permissions on AVD resources
+- [ ] Azure CLI is installed and you're logged in (`az login`)
+- [ ] You've reviewed your workspace retention policy
+- [ ] You've planned for log ingestion costs
+- [ ] You have a strategy for log queries and alerting (see AVD-Alerts script)
 
 1. **Login to Azure:**
    ```powershell
@@ -180,36 +187,6 @@ Use default workspace values:
 - `Microsoft.DesktopVirtualization/applicationGroups`
 - `Microsoft.DesktopVirtualization/workspaces`
 
-## Data Retention & Cost Considerations
-
-### Log Analytics Retention
-
-| Setting | Detail |
-|---|---|
-| Default retention | 30 days (included free) |
-| Extended retention | Up to 730 days (additional cost applies) |
-| Archive policies | Recommended for long-term compliance needs |
-
-### Cost Optimization Tips
-
-| Tip | Why |
-|---|---|
-| Use `allLogs` category | Simplifies configuration without missing critical data |
-| Set appropriate retention | Balance compliance requirements with storage costs |
-| Query efficiently | Apply time ranges and filters to minimize data processing charges |
-| Archive old data | Move aged logs to cheaper storage tiers |
-| Monitor ingestion rates | Track daily log volume in the Log Analytics workspace |
-
-### Estimated Monthly Log Volume
-
-| Environment Size | Users | Estimated Volume |
-|---|---|---|
-| Small | < 50 | ~1–2 GB/month |
-| Medium | 50–200 | ~5–10 GB/month |
-| Large | > 200 | ~20+ GB/month |
-
-*Actual volume depends on user activity, connection frequency, and error rates.*
-
 ## Additional Resources
 
 | Category | Resource | Description |
@@ -223,21 +200,32 @@ Use default workspace values:
 | Community | [AVD Tech Community](https://techcommunity.microsoft.com/t5/azure-virtual-desktop/bd-p/AzureVirtualDesktopForum) | Microsoft Tech Community forum |
 | Community | [AVD GitHub Samples](https://github.com/Azure/RDS-Templates/tree/master/wvd-templates) | Official ARM/Bicep deployment templates |
 
-## Best Practice Checklist
-
-Before running this script, ensure:
-- [ ] Log Analytics workspace exists and is properly sized
-- [ ] You have Monitoring Contributor permissions on AVD resources
-- [ ] Azure CLI is installed and you're logged in (`az login`)
-- [ ] You've reviewed your workspace retention policy
-- [ ] You've planned for log ingestion costs
-- [ ] You have a strategy for log queries and alerting (see AVD-Alerts script)
-
 ## Version
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Last Updated:** February 2026
 
 ## License
 
 See [LICENSE](../LICENSE) file for details.
+
+## Disclaimer
+
+**THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.**
+
+This script is provided as-is under the MIT License. The authors and contributors:
+
+- **Make no warranties or guarantees** about the functionality, reliability, or suitability of this script for any purpose
+- **Accept no responsibility or liability** for any damages, data loss, service interruptions, or other issues arising from the use of this script
+- **Provide no support or maintenance** obligations, though community contributions are welcome
+- **Recommend thorough testing** in a non-production environment before deploying to production systems
+
+### Important Notes:
+
+- ⚠️ **Test First**: Always test in a development/staging environment before running in production
+- ⚠️ **Backup**: Ensure you have appropriate backups and rollback procedures
+- ⚠️ **Permissions**: Review required Azure RBAC permissions before execution
+- ⚠️ **Costs**: Understand Azure Monitor and Log Analytics pricing before enabling diagnostics at scale
+- ⚠️ **Compliance**: Verify this solution meets your organization's security and compliance requirements
+
+**By using this script, you acknowledge and accept these terms and assume all risks associated with its use.**

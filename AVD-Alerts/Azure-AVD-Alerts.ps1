@@ -1,6 +1,9 @@
 #requires -Version 5.1
 <#
 ==============================================================================
+SCRIPT VERSION: 2.0
+LAST UPDATED: February 2026
+==============================================================================
 QUICK START:
 1. Update the default parameter values below (lines 67-93) with your values:
    - EmailTo: Your email address for alert notifications
@@ -105,7 +108,7 @@ $ScriptStartTime = Get-Date
 
 # Check 1: Verify Azure CLI is installed
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
-  throw "Azure CLI not found. Please install from https://docs.microsoft.com/cli/azure/install-azure-cli"
+  throw "Azure CLI not found. Please install from https://learn.microsoft.com/cli/azure/install-azure-cli"
 }
 
 # Check 2: Validate placeholder parameters have been updated
@@ -147,9 +150,13 @@ try {
   if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingAlertsOutput)) {
     $existingAlertNamesList = $existingAlertsOutput -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     Write-Host "[Pre-flight] Found $($existingAlertNamesList.Count) existing AVD alert(s)" -ForegroundColor Gray
+  } else {
+    Write-Host "[Pre-flight] No existing AVD alerts found or query failed - will check individually" -ForegroundColor Gray
+    $existingAlertNamesList = $null  # Signal to use individual checks instead
   }
 } catch {
-  Write-Host "[Pre-flight] Could not query existing alerts (non-fatal)" -ForegroundColor Yellow
+  Write-Host "[Pre-flight] Could not query existing alerts - will check individually" -ForegroundColor Yellow
+  $existingAlertNamesList = $null  # Signal to use individual checks instead
 }
 
 # ----------------------------
@@ -164,8 +171,14 @@ function Write-Log {
 function Test-AlertExists {
   param([string]$AlertName)
   
-  # Use cached list from pre-flight check for performance
-  return ($existingAlertNamesList -contains $AlertName)
+  # Use cached list from pre-flight check if available, otherwise check individually
+  if ($null -eq $script:existingAlertNamesList) {
+    # Fallback: individual query if cache failed
+    az monitor scheduled-query show -g $ResourceGroup -n $AlertName -o json 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+  }
+  
+  return ($script:existingAlertNamesList -contains $AlertName)
 }
 
 # ----------------------------
@@ -208,10 +221,12 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
     Write-Log "Action group already exists" "Gray"
   }
 
-  # Ensure email receiver exists (use unique name based on email to avoid conflicts)
+  # Ensure email receiver exists (use hash-based unique name to avoid collisions)
   Write-Log "Configuring email receiver: $EmailTo" "Gray"
-  $emailSafe = $EmailTo -replace '[^a-zA-Z0-9]', ''
-  $receiverName = "AVDEmail$(if ($emailSafe.Length -gt 20) { $emailSafe.Substring(0,20) } else { $emailSafe })"
+  # Create unique receiver name using first 8 chars + hash to prevent collisions
+  $emailHash = [BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($EmailTo))).Replace('-','').Substring(0,8)
+  $emailPrefix = ($EmailTo -replace '[^a-zA-Z0-9]', '').Substring(0, [Math]::Min(12, ($EmailTo -replace '[^a-zA-Z0-9]', '').Length))
+  $receiverName = "AVD$emailPrefix$emailHash"
   
   # Check if receiver already exists with different email
   $agDetails = az monitor action-group show -g $ResourceGroup -n $ActionGroupName -o json 2>$null | ConvertFrom-Json
@@ -220,20 +235,27 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
   if ($existingReceiver -and $existingReceiver.emailAddress -ne $EmailTo) {
     Write-Log "Updating email receiver to new address: $EmailTo" "Yellow"
     # Remove old receiver and add new one
-    az monitor action-group update -g $ResourceGroup -n $ActionGroupName --remove emailReceivers name=$receiverName 2>$null | Out-Null
+    $removeOutput = az monitor action-group update -g $ResourceGroup -n $ActionGroupName --remove emailReceivers name=$receiverName 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      Write-Log "Warning: Failed to remove old email receiver: $removeOutput" "Yellow"
+      Write-Log "Attempting to add new receiver anyway..." "Yellow"
+    }
   }
   
+  # Add or update email receiver
   $emailOutput = az monitor action-group update `
     -g $ResourceGroup `
     -n $ActionGroupName `
     --add-action email $receiverName $EmailTo 2>&1
   
   if ($LASTEXITCODE -ne 0) {
-    # Check if error is about duplicate receiver (expected/acceptable)
-    if ($emailOutput -match "already exists|duplicate") {
+    # Parse error to determine if it's expected (duplicate) or actual failure
+    $errorLower = $emailOutput.ToString().ToLower()
+    if ($errorLower -match "already exists" -or $errorLower -match "duplicate" -or $errorLower -match "receiver.*exists") {
       Write-Log "Email receiver already configured" "Gray"
     } else {
       Write-Log "Warning: Failed to add email receiver: $emailOutput" "Yellow"
+      Write-Log "This may not affect alert functionality if the receiver already exists" "Yellow"
     }
   }
   
@@ -249,7 +271,9 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
   Write-Log "Action Group ID: $AgId" "Gray"
 } else {
   Write-Log "[WhatIf] Would retrieve action group ID" "Yellow"
-  $AgId = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/$ResourceGroup/providers/microsoft.insights/actionGroups/$ActionGroupName"
+  # Get actual subscription ID for realistic WhatIf mode
+  $subId = $accountInfo.id
+  $AgId = "/subscriptions/$subId/resourceGroups/$ResourceGroup/providers/microsoft.insights/actionGroups/$ActionGroupName"
   Write-Log "Action Group ID (simulated): $AgId" "Gray"
 }
 
@@ -257,6 +281,7 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
 # Helper: create/update scheduled query alert (Log Alert v2)
 # ----------------------------
 function New-OrUpdate-ScheduledQueryAlert {
+  [CmdletBinding(SupportsShouldProcess)]
   param(
     [Parameter(Mandatory)][string]$AlertName,
     [Parameter(Mandatory)][string]$Kql,
@@ -566,8 +591,10 @@ if ($whatIfCount -gt 0) {
     Write-Log "2. Run this PowerShell command to delete all AVD alerts:" "Yellow"
     Write-Log "" 
     $deleteCmd = @"
-az monitor scheduled-query list -g $ResourceGroup --query "[?starts_with(name,'AVD-')].name" -o tsv | 
-  ForEach-Object { az monitor scheduled-query delete -g $ResourceGroup -n `$`_ -y }
+`$alerts = az monitor scheduled-query list -g $ResourceGroup --query "[?starts_with(name,'AVD-')].name" -o tsv
+`$alerts | ForEach-Object { 
+  if (`$_) { az monitor scheduled-query delete -g $ResourceGroup -n `$_ -y } 
+}
 "@
     Write-Log $deleteCmd "Gray"
     Write-Log "" 
