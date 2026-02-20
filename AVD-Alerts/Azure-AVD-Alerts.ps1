@@ -293,8 +293,8 @@ try {
     }
   } else {
     Stop-Job $listJob -ErrorAction SilentlyContinue
-    Write-Host "[Pre-flight] Alert list query timed out - will verify each alert individually" -ForegroundColor Yellow
-    # $script:existingAlertNamesList remains $null -> Test-AlertExists falls back to individual az show calls
+    Write-Host "[Pre-flight] Alert list query timed out - will attempt creation for all alerts (conflicts handled safely)" -ForegroundColor Yellow
+    $script:existingAlertNamesList = @()  # Treat as empty; conflict errors during creation are handled gracefully
   }
   Remove-Job $listJob -Force -ErrorAction SilentlyContinue
 } catch {
@@ -476,8 +476,8 @@ function New-OrUpdate-ScheduledQueryAlert {
     Write-Log "Creating new alert: $AlertName (Severity: $severityText)" "Cyan"
 
     try {
-      # Convert multi-line query to single line and escape quotes for Azure CLI
-      $queryEscaped = $Kql -replace "`r", "" -replace "`n", " " -replace '"', '\"'
+      # Convert multi-line query to single line for Azure CLI
+      $queryEscaped = $Kql -replace "`r", "" -replace "`n", " "
       
       $azCmdArgs = @(
         'monitor', 'scheduled-query', 'create',
@@ -496,9 +496,17 @@ function New-OrUpdate-ScheduledQueryAlert {
         $action  = "Created"
         $script:NewlyCreatedAlerts += $AlertName
       } else {
-        Write-Log "  ✗ Failed: $output" "Red"
-        $status = "Failed"
-        $action  = "Failed"
+        $errStr = ($output | Out-String).ToLower()
+        if ($errStr -match "conflict|already exists") {
+          Write-Log "  ~ Already exists (skipped)" "Gray"
+          $status = "Skipped"
+          $action  = "Skipped"
+          $script:ExistingAlerts += $AlertName
+        } else {
+          Write-Log "  ✗ Failed: $output" "Red"
+          $status = "Failed"
+          $action  = "Failed"
+        }
       }
     }
     catch {
@@ -598,9 +606,9 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
     
     # Build KQL query
     $kql = @"
-union isfuzzy=true WVDHostRegistration, WVDErrors
+union isfuzzy=true  WVDErrors
 | where TimeGenerated > ago(5m)
-| where CodeSymbolic == "$($alert.CodeSymbolic)"
+| where CodeSymbolic == '$($alert.CodeSymbolic)'
 | project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
 "@
     
@@ -627,8 +635,8 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
     } else {
       # Execute actual Azure CLI commands
       try {
-        # Convert multi-line query to single line and escape quotes
-        $queryEscaped = $kql -replace "`r", "" -replace "`n", " " -replace '"', '\"'
+        # Convert multi-line query to single line for Azure CLI
+        $queryEscaped = $kql -replace "`r", "" -replace "`n", " "
         
         $azCmdArgs = @(
           'monitor', 'scheduled-query', 'create',
@@ -645,9 +653,16 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
           $result.Status = "Success"
           $result.Action = "Created"
         } else {
-          $result.Status = "Failed"
-          $result.Action = "Failed"
-          $result.ErrorOutput = $output | Out-String
+          $errStr = ($output | Out-String).ToLower()
+          if ($errStr -match "conflict|already exists") {
+            $result.Status = "Skipped"
+            $result.Action = "Skipped"
+            $result.AlreadyExisted = $true
+          } else {
+            $result.Status = "Failed"
+            $result.Action = "Failed"
+            $result.ErrorOutput = $output | Out-String
+          }
         }
       } catch {
         $result.Status = "Error"
@@ -733,9 +748,9 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
     }
     
     $kql = @"
-union isfuzzy=true WVDHostRegistration, WVDErrors
+union isfuzzy=true  WVDErrors
 | where TimeGenerated > ago(5m)
-| where CodeSymbolic == "$($alert.CodeSymbolic)"
+| where CodeSymbolic == '$($alert.CodeSymbolic)'
 | project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
 "@
     
