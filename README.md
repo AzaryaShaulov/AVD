@@ -2,12 +2,26 @@
 
 PowerShell automation tools for configuring comprehensive monitoring, diagnostics, and alerting for Azure Virtual Desktop environments.
 
+## Getting Started
+
+**Important:** These scripts work together to provide complete AVD monitoring:
+
+1. **First, enable diagnostics** using the AVD-Diagnostics script if diagnostic settings are not already configured on your AVD resources. Diagnostic logs are essential for capturing connection, authentication, and error data.
+
+2. **Then, create alerts** using the AVD-Alerts script. The alerts query the diagnostic logs collected by Log Analytics to detect and notify you of critical issues.
+
+**Note:** If diagnostic settings are already enabled on your AVD resources, you can run the AVD-Alerts script independently to create monitoring alerts.
+
 ## Scripts Overview
 
-### 📊 [AVDDiagnostics](./AVDDiagnostics/)
+### 📊 [AVD-Diagnostics](./AVD-Diagnostics/)
+**Run this first if diagnostics are not yet enabled.**
+
 Automatically discovers and configures diagnostic settings for all AVD resources (Host Pools, Application Groups, Workspaces) to send logs and metrics to a Log Analytics workspace. Enables all available log categories individually for comprehensive logging coverage across your entire AVD environment.
 
 ### 🔔 [AVD-Alerts](./AVD-Alerts/)
+**Depends on diagnostic logs being enabled (by AVD-Diagnostics or manually configured).**
+
 Creates 20 pre-configured Azure Monitor scheduled query alerts that monitor critical AVD connection, authentication, and resource issues with 5-minute evaluation frequency. Features parallel processing (PowerShell 7+) for fast execution, proper WhatIf support for safe testing, and multi-subscription targeting. Sends email notifications through Azure Monitor Action Groups when problems are detected, enabling rapid incident response.
 
 **Version 2.1** - Critical bug fixes for WhatIf functionality and improved performance with 77% speed improvement through parallel processing.
@@ -31,22 +45,28 @@ These scripts **support and enable the Azure Virtual Desktop | Insights workbook
 
 ## Quick Start
 
-### 1. Enable Diagnostic Settings
+### 1. Enable Diagnostic Settings (if not already enabled)
+**Run this first if your AVD resources don't have diagnostic settings configured.**
+
 ```powershell
-cd AVDDiagnostics
+cd AVD-Diagnostics
 .\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID" -WorkspaceName "YOUR-LAW-NAME"
 ```
 
-### 2. Create AVD Alerts
+### 2. Create AVD Alerts (requires diagnostic logs)
+**This script queries logs collected by diagnostic settings configured in step 1.**
+
 ```powershell
 cd AVD-Alerts
 .\Azure-AVD-Alerts.ps1 -EmailTo "admin@contoso.com" -ResourceGroup "YOUR-RG" -LawName "YOUR-LAW-NAME" -Location "eastus2"
 ```
 
+**Note:** If diagnostic settings are already configured on your AVD resources, you can skip step 1 and run step 2 directly.
+
 ## Documentation
 
 Each script includes comprehensive documentation:
-- [AVDDiagnostics README](./AVDDiagnostics/README.md) - Diagnostic settings configuration details
+- [AVD-Diagnostics README](./AVD-Diagnostics/README.md) - Diagnostic settings configuration details
 - [AVD-Alerts README](./AVD-Alerts/README.md) - Alert configuration and complete alert reference (v2.1)
 
 ## Related Resources
