@@ -78,7 +78,7 @@ QUICK START:
 param(
   [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
-  [ValidatePattern('^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$')]
+  [ValidatePattern('^[\w-\.]+@([\w-]+\.)+[\w-]{2,}$')]
   [string]$EmailTo = "your-email@domain.com",
 
   [Parameter(Mandatory = $false)]
@@ -204,9 +204,10 @@ function Write-Log {
 function Test-AlertExists {
   param([string]$AlertName)
   
-  # Phase 1 optimization: Use cached list directly (no individual queries)
+  # Use cached list if available; otherwise fall back to individual query
   if ($null -eq $script:existingAlertNamesList) {
-    return $false  # If cache failed, assume alert doesn't exist
+    az monitor scheduled-query show -g $ResourceGroup -n $AlertName --subscription $accountInfo.id -o none 2>$null
+    return ($LASTEXITCODE -eq 0)
   }
   
   return ($script:existingAlertNamesList -contains $AlertName)
@@ -453,6 +454,8 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
   # Parallel processing with throttling
   $throttleLimit = 5  # Process 5 alerts simultaneously
   $isWhatIf = $PSBoundParameters.ContainsKey('WhatIf')
+  # Capture $script:-scoped cache into a regular variable so $using: can reference it
+  $existingAlertNamesListLocal = $script:existingAlertNamesList
   
   $results = $alertDefinitions | ForEach-Object -ThrottleLimit $throttleLimit -Parallel {
     $alert = $_
@@ -466,7 +469,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
     $WindowSize = $using:WindowSize
     $Severity = $using:Severity
     $AgId = $using:AgId
-    $existingAlertNamesList = $using:existingAlertNamesList
+    $existingAlertNamesList = $using:existingAlertNamesListLocal
     $isWhatIf = $using:isWhatIf
     
     # Build KQL query
@@ -480,19 +483,12 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
     # Check if alert exists
     $alertExists = $existingAlertNamesList -contains $alert.Name
     
-    $severityText = switch ($Severity) {
-      0 { "Critical" }
-      1 { "Error" }
-      2 { "Warning" }
-      3 { "Informational" }
-      4 { "Verbose" }
-    }
-    
     $result = [PSCustomObject]@{
       AlertName = $alert.Name
       Description = $alert.Description
       Status = "Processing"
       Action = ""
+      ErrorOutput = ""
       AlreadyExisted = $alertExists
     }
     
@@ -530,6 +526,7 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
         } else {
           $result.Status = "Failed"
           $result.Action = "Failed"
+          $result.ErrorOutput = $output | Out-String
         }
       } catch {
         $result.Status = "Error"
@@ -575,7 +572,8 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
       if ($result.Status -eq "Success") {
         Write-Log "  ✓ Success" "Green"
       } else {
-        Write-Log "  ✗ $($result.Status)" "Red"
+        $errDetail = if ($result.ErrorOutput) { ": $($result.ErrorOutput.Trim())" } else { "" }
+        Write-Log "  ✗ $($result.Status)$errDetail" "Red"
       }
     }
     
@@ -602,7 +600,7 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
     Write-Progress -Activity "Creating/Updating AVD Alerts" -Status "Processing alert $alertCount of $($alertDefinitions.Count): $($alert.Name)" -PercentComplete $percentComplete
     
     # Status report for WhatIf mode if running longer than 30 seconds
-    if ($WhatIf) {
+    if ($PSBoundParameters.ContainsKey('WhatIf')) {
       $elapsed = (Get-Date) - $alertProcessingStart
       $timeSinceLastReport = (Get-Date) - $lastStatusReport
       
