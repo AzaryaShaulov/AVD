@@ -268,20 +268,38 @@ $ExistingAlerts = @()
 $NewlyCreatedAlerts = @()
 
 # Performance optimization: Get all existing alerts once
-Write-Host "[Pre-flight] Checking for existing alerts..." -ForegroundColor Cyan
-$script:existingAlertNamesList = @()
+# Run in a background job with a timeout so a slow or hanging API call does not block the script.
+Write-Host "[Pre-flight] Checking for existing alerts (timeout: 25s)..." -ForegroundColor Cyan
+$script:existingAlertNamesList = $null  # Default: fall back to individual checks
 try {
-  $existingAlertsOutput = az monitor scheduled-query list -g $ResourceGroup --subscription $accountInfo.id --query "[?starts_with(name,'AVD-')].name" -o tsv 2>$null
-  if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingAlertsOutput)) {
-    $script:existingAlertNamesList = $existingAlertsOutput -split "[\r\n]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() }
-    Write-Host "[Pre-flight] Found $($script:existingAlertNamesList.Count) existing AVD alert(s)" -ForegroundColor Gray
-  } else {
-    Write-Host "[Pre-flight] No existing AVD alerts found or query failed - will check individually" -ForegroundColor Gray
-    $script:existingAlertNamesList = $null  # Signal to use individual checks instead
+  $_listJobRg    = $ResourceGroup
+  $_listJobSubId = $accountInfo.id
+  $listJob = Start-Job -ScriptBlock {
+    az monitor scheduled-query list -g $using:_listJobRg --subscription $using:_listJobSubId --query "[?starts_with(name,'AVD-')].name" -o tsv 2>$null
   }
+
+  $completed = Wait-Job $listJob -Timeout 25
+
+  if ($null -ne $completed) {
+    $existingAlertsOutput = Receive-Job $listJob -ErrorAction SilentlyContinue
+    if (-not [string]::IsNullOrWhiteSpace($existingAlertsOutput)) {
+      $script:existingAlertNamesList = $existingAlertsOutput -split "[\r\n]+" |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_.Trim() }
+      Write-Host "[Pre-flight] Found $($script:existingAlertNamesList.Count) existing AVD alert(s)" -ForegroundColor Gray
+    } else {
+      Write-Host "[Pre-flight] No existing AVD alerts found - all will be created" -ForegroundColor Gray
+      $script:existingAlertNamesList = @()  # Empty list (not null) = confirmed zero alerts exist
+    }
+  } else {
+    Stop-Job $listJob -ErrorAction SilentlyContinue
+    Write-Host "[Pre-flight] Alert list query timed out - will verify each alert individually" -ForegroundColor Yellow
+    # $script:existingAlertNamesList remains $null -> Test-AlertExists falls back to individual az show calls
+  }
+  Remove-Job $listJob -Force -ErrorAction SilentlyContinue
 } catch {
   Write-Host "[Pre-flight] Could not query existing alerts - will check individually" -ForegroundColor Yellow
-  $script:existingAlertNamesList = $null  # Signal to use individual checks instead
+  $script:existingAlertNamesList = $null
 }
 
 # ----------------------------
