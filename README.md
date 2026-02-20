@@ -8,10 +8,9 @@ PowerShell automation tools for configuring comprehensive monitoring, diagnostic
 Automatically discovers and configures diagnostic settings for all AVD resources (Host Pools, Application Groups, Workspaces) to send logs and metrics to a Log Analytics workspace. Enforces best practice `allLogs` category group for comprehensive logging coverage across your entire AVD environment.
 
 ### 🔔 [AVD-Alerts](./AVD-Alerts/)
-Creates 20 pre-configured Azure Monitor scheduled query alerts that monitor critical AVD connection, authentication, and resource issues with 5-minute evaluation frequency. Sends email notifications through Azure Monitor Action Groups when problems are detected, enabling rapid incident response.
+Creates 20 pre-configured Azure Monitor scheduled query alerts that monitor critical AVD connection, authentication, and resource issues with 5-minute evaluation frequency. Features parallel processing (PowerShell 7+) for fast execution, proper WhatIf support for safe testing, and multi-subscription targeting. Sends email notifications through Azure Monitor Action Groups when problems are detected, enabling rapid incident response.
 
-### 📈 [AVD-SessionHostMonitoring](./AVD-SessionHostMonitoring/)
-Creates Data Collection Rules (DCR) for session host performance monitoring, collecting 18 performance counters including CPU, memory, disk latency, and network bandwidth metrics. Provides interactive host pool discovery and DCR association across all session hosts in your subscription.
+**Version 2.1** - Critical bug fixes for WhatIf functionality and improved performance with 77% speed improvement through parallel processing.
 
 ## Why Enable Diagnostics and Alerts?
 
@@ -44,18 +43,11 @@ cd AVD-Alerts
 .\Azure-AVD-Alerts.ps1 -EmailTo "admin@contoso.com" -ResourceGroup "YOUR-RG" -LawName "YOUR-LAW-NAME" -Location "eastus2"
 ```
 
-### 3. Configure Session Host Monitoring
-```powershell
-cd AVD-SessionHostMonitoring
-.\AVD-Enable-SessionHost-Insights-Monitoring.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW-NAME"
-```
-
 ## Documentation
 
 Each script includes comprehensive documentation:
 - [AVDDiagnostics README](./AVDDiagnostics/README.md) - Diagnostic settings configuration details
-- [AVD-Alerts README](./AVD-Alerts/README.md) - Alert configuration and complete alert reference
-- [SessionHostMonitoring README](./AVD-SessionHostMonitoring/README.md) - Performance counter collection and DCR details
+- [AVD-Alerts README](./AVD-Alerts/README.md) - Alert configuration and complete alert reference (v2.1)
 
 ## Related Resources
 
