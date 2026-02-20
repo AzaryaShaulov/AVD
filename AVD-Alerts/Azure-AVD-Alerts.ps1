@@ -10,6 +10,7 @@ QUICK START:
    - ResourceGroup: Your Azure resource group name
    - LawName: Your Log Analytics workspace name  
    - Location: Your Azure region (e.g., eastus, westus2)
+   - ActionGroupName: Name of the Azure Monitor action group (default: "AVD-Alerts")
    - SubscriptionId: (Optional) Specify if you want to target a specific subscription
 
 2. Run the script with defaults:
@@ -37,7 +38,8 @@ QUICK START:
   Azure subscription ID. If not provided, uses the current subscription context.
 
 .PARAMETER ActionGroupName
-  Name of the Azure Monitor action group.
+  Name of the Azure Monitor action group. If it already exists, the specified email will be
+  added to it. If it does not exist, a new action group will be created. Default: "AVD-Alerts"
 
 .PARAMETER ResourceGroup
   Resource group containing the Log Analytics workspace and action group.
@@ -165,15 +167,105 @@ if ($placeholderParams.Count -gt 0) {
   throw "Please update the following parameter(s) with actual values: $paramList`nYou can either edit the default values in the script or pass them as arguments."
 }
 
+# Check 5: Verify RBAC permissions
+# Required operations:
+#   - Microsoft.Insights/scheduledQueryRules/*        (create/update/list alerts)
+#   - Microsoft.Insights/actionGroups/*               (create/update action group)
+#   - Microsoft.OperationalInsights/workspaces/read   (resolve LAW resource ID)
+#
+# Roles that satisfy all of the above:
+#   Fully sufficient  : Owner | Contributor
+#   Partially sufficient (both needed together): Monitoring Contributor + Log Analytics Contributor/Reader
+Write-Host "[Pre-flight] Checking RBAC permissions..." -ForegroundColor Cyan
+
+$rgScope = "/subscriptions/$($accountInfo.id)/resourceGroups/$ResourceGroup"
+
+# Determine the signed-in principal's object ID (works for user and service principal)
+$principalId = az ad signed-in-user show --query id -o tsv 2>$null
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($principalId)) {
+  # Fallback: service principal / managed identity path
+  $principalId = $accountInfo.user.name
+}
+
+# Fetch all role assignments at RG scope (inherited from sub/MG included)
+$roleAssignmentsJson = az role assignment list `
+  --assignee $principalId `
+  --scope $rgScope `
+  --include-inherited `
+  --include-groups `
+  --output json 2>$null
+
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($roleAssignmentsJson)) {
+  Write-Host "[Pre-flight] WARNING: Could not retrieve role assignments. Continuing, but ensure you have:" -ForegroundColor Yellow
+  Write-Host "  - Microsoft.Insights/scheduledQueryRules/* on RG '$ResourceGroup'" -ForegroundColor Yellow
+  Write-Host "  - Microsoft.Insights/actionGroups/* on RG '$ResourceGroup'" -ForegroundColor Yellow
+  Write-Host "  - Microsoft.OperationalInsights/workspaces/read on RG '$ResourceGroup'" -ForegroundColor Yellow
+} else {
+  $roleAssignments = $roleAssignmentsJson | ConvertFrom-Json
+  $assignedRoleNames = $roleAssignments | Select-Object -ExpandProperty roleDefinitionName
+
+  # Built-in role IDs for programmatic matching (display names can be localised)
+  $fullyQualifiedRoleIds = @(
+    '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'  # Owner
+    'b24988ac-6180-42a0-ab88-20f7382dd24c'  # Contributor
+  )
+  $monitoringContributorId   = '749f88d5-cbae-40b8-bcfc-e573ddc772fa'
+  $logAnalyticsContribId     = '92aaf0da-9dab-42b6-94a3-d43ce8d16293'
+  $logAnalyticsReaderId      = '73c42c96-874c-492b-b04d-ab87d138a893'
+
+  # Extract just the GUID portion from each roleDefinitionId
+  $assignedRoleIds = $roleAssignments | ForEach-Object {
+    ($_.roleDefinitionId -split '/')[-1]
+  }
+
+  $hasFullRole            = ($assignedRoleIds | Where-Object { $fullyQualifiedRoleIds -contains $_ }).Count -gt 0
+  $hasMonitoringContrib   = $assignedRoleIds -contains $monitoringContributorId
+  $hasLAWContribOrReader  = ($assignedRoleIds -contains $logAnalyticsContribId) -or
+                             ($assignedRoleIds -contains $logAnalyticsReaderId)
+
+  # ---- Evaluate coverage ----
+  if ($hasFullRole) {
+    $matchedRole = ($assignedRoleNames | Where-Object { $_ -in @('Owner','Contributor') } | Select-Object -First 1)
+    Write-Host "[Pre-flight] RBAC OK - '$matchedRole' covers all required permissions." -ForegroundColor Green
+  } elseif ($hasMonitoringContrib -and $hasLAWContribOrReader) {
+    Write-Host "[Pre-flight] RBAC OK - 'Monitoring Contributor' + Log Analytics role cover all required permissions." -ForegroundColor Green
+  } else {
+    # Partial coverage - report exactly what is missing
+    Write-Host "[Pre-flight] WARNING: Insufficient RBAC permissions detected." -ForegroundColor Yellow
+    Write-Host ""  -ForegroundColor Yellow
+    Write-Host "  Assigned roles on scope '$rgScope':" -ForegroundColor Yellow
+    if ($assignedRoleNames.Count -gt 0) {
+      $assignedRoleNames | ForEach-Object { Write-Host "    - $_" -ForegroundColor Gray }
+    } else {
+      Write-Host "    (none found)" -ForegroundColor Gray
+    }
+    Write-Host ""
+    Write-Host "  Required permissions and recommended roles:" -ForegroundColor Yellow
+    if (-not $hasMonitoringContrib) {
+      Write-Host "  [MISSING] Microsoft.Insights/scheduledQueryRules/* and Microsoft.Insights/actionGroups/*" -ForegroundColor Red
+      Write-Host "            -> Assign 'Monitoring Contributor' on RG '$ResourceGroup'" -ForegroundColor Red
+    }
+    if (-not $hasLAWContribOrReader) {
+      Write-Host "  [MISSING] Microsoft.OperationalInsights/workspaces/read" -ForegroundColor Red
+      Write-Host "            -> Assign 'Log Analytics Reader' on RG '$ResourceGroup'" -ForegroundColor Red
+    }
+    Write-Host ""
+    Write-Host "  Quick fix - run these Azure CLI commands:" -ForegroundColor Cyan
+    Write-Host "    az role assignment create --assignee '$principalId' --role 'Monitoring Contributor' --scope '$rgScope'" -ForegroundColor Cyan
+    Write-Host "    az role assignment create --assignee '$principalId' --role 'Log Analytics Reader'   --scope '$rgScope'" -ForegroundColor Cyan
+    Write-Host ""
+    throw "Insufficient RBAC permissions. Please assign the roles listed above and re-run the script."
+  }
+}
+
 # Alert cadence
 $EvalFrequency = "PT5M"   # every 5 minutes
 $WindowSize    = "PT5M"   # evaluation window (5 minutes)
 
-# Track created/updated alerts for CSV export
+# Track created alerts for CSV export
 $AlertResults = @()
 $ExistingAlerts = @()
 $NewlyCreatedAlerts = @()
-$UpdatedAlerts = @()
 
 # Performance optimization: Get all existing alerts once
 Write-Host "[Pre-flight] Checking for existing alerts..." -ForegroundColor Cyan
@@ -181,7 +273,7 @@ $script:existingAlertNamesList = @()
 try {
   $existingAlertsOutput = az monitor scheduled-query list -g $ResourceGroup --subscription $accountInfo.id --query "[?starts_with(name,'AVD-')].name" -o tsv 2>$null
   if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingAlertsOutput)) {
-    $script:existingAlertNamesList = $existingAlertsOutput -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $script:existingAlertNamesList = $existingAlertsOutput -split "[\r\n]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() }
     Write-Host "[Pre-flight] Found $($script:existingAlertNamesList.Count) existing AVD alert(s)" -ForegroundColor Gray
   } else {
     Write-Host "[Pre-flight] No existing AVD alerts found or query failed - will check individually" -ForegroundColor Gray
@@ -203,14 +295,20 @@ function Write-Log {
 
 function Test-AlertExists {
   param([string]$AlertName)
-  
-  # Use cached list if available; otherwise fall back to individual query
-  if ($null -eq $script:existingAlertNamesList) {
-    az monitor scheduled-query show -g $ResourceGroup -n $AlertName --subscription $accountInfo.id -o none 2>$null
-    return ($LASTEXITCODE -eq 0)
+
+  # Priority 1: Pre-built definitive map (built in main scope - most reliable)
+  if ($null -ne $script:alertExistenceMap -and $script:alertExistenceMap.ContainsKey($AlertName)) {
+    return $script:alertExistenceMap[$AlertName]
   }
-  
-  return ($script:existingAlertNamesList -contains $AlertName)
+
+  # Priority 2: Bulk-query cache from pre-flight (fast string compare)
+  if ($null -ne $script:existingAlertNamesList) {
+    return ($script:existingAlertNamesList -contains $AlertName)
+  }
+
+  # Priority 3: Individual API query (fallback when both cache sources are unavailable)
+  az monitor scheduled-query show -g $ResourceGroup -n $AlertName --subscription $accountInfo.id -o none 2>$null
+  return ($LASTEXITCODE -eq 0)
 }
 
 # ----------------------------
@@ -233,7 +331,8 @@ Write-Log "Log Analytics Workspace ID: $LawId" "Gray"
 # ----------------------------
 # Create / ensure Action Group (email)
 # ----------------------------
-Write-Log "Ensuring Action Group: $ActionGroupName (email -> $EmailTo)" "Cyan"
+Write-Log "Action Group  : $ActionGroupName" "Cyan"
+Write-Log "Email Receiver: $EmailTo" "Cyan"
 
 if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) {
   # Check if action group exists
@@ -241,7 +340,7 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
   $agExists = ($LASTEXITCODE -eq 0)
 
   if (-not $agExists) {
-    Write-Log "Creating action group: $ActionGroupName" "Yellow"
+    Write-Log "Action group '$ActionGroupName' not found - creating new action group..." "Yellow"
     $agOutput = az monitor action-group create `
       -g $ResourceGroup `
       -n $ActionGroupName `
@@ -251,17 +350,23 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
     if ($LASTEXITCODE -ne 0) {
       throw "Failed to create action group: $agOutput"
     }
+    Write-Log "Action group '$ActionGroupName' created successfully." "Green"
     # Refresh details after creation
     $agDetailsJson = az monitor action-group show -g $ResourceGroup -n $ActionGroupName --subscription $accountInfo.id -o json 2>$null
   } else {
-    Write-Log "Action group already exists" "Gray"
+    Write-Log "Action group '$ActionGroupName' already exists - will add email '$EmailTo' to the existing action group." "Yellow"
   }
 
   # Parse action group details
   $agDetails = $agDetailsJson | ConvertFrom-Json
   
   # Create unique receiver name using first 8 chars + hash to prevent collisions
-  $emailHash = [BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($EmailTo))).Replace('-','').Substring(0,8)
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $emailHash = [BitConverter]::ToString($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($EmailTo))).Replace('-','').Substring(0,8)
+  } finally {
+    $sha256.Dispose()
+  }
   $emailPrefix = ($EmailTo -replace '[^a-zA-Z0-9]', '').Substring(0, [Math]::Min(12, ($EmailTo -replace '[^a-zA-Z0-9]', '').Length))
   $receiverName = "AVD$emailPrefix$emailHash"
   
@@ -269,9 +374,9 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
   $existingReceiver = $agDetails.emailReceivers | Where-Object { $_.emailAddress -eq $EmailTo }
   
   if ($existingReceiver) {
-    Write-Log "Email receiver already configured correctly: $EmailTo" "Gray"
+    Write-Log "Email '$EmailTo' is already a receiver on action group '$ActionGroupName' - no change needed." "Gray"
   } else {
-    Write-Log "Configuring email receiver: $EmailTo" "Gray"
+    Write-Log "Adding email receiver '$EmailTo' to action group '$ActionGroupName'..." "Gray"
     
     # Check if receiver exists with different email
     $receiverWithName = $agDetails.emailReceivers | Where-Object { $_.name -eq $receiverName }
@@ -290,7 +395,7 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
     
     if ($LASTEXITCODE -ne 0) {
       # Parse error to determine if it's expected (duplicate) or actual failure
-      $errorLower = $emailOutput.ToString().ToLower()
+      $errorLower = ($emailOutput | Out-String).ToLower()
       if ($errorLower -match "already exists" -or $errorLower -match "duplicate" -or $errorLower -match "receiver.*exists") {
         Write-Log "Email receiver already configured" "Gray"
       } else {
@@ -345,60 +450,48 @@ function New-OrUpdate-ScheduledQueryAlert {
     $script:ExistingAlerts += $AlertName
   }
 
-  if ($PSCmdlet.ShouldProcess($AlertName, "Create or update scheduled query alert")) {
-    if ($alertExists) {
-      Write-Log "Updating existing alert: $AlertName (Severity: $severityText)" "Yellow"
-    } else {
-      Write-Log "Creating new alert: $AlertName (Severity: $severityText)" "Cyan"
-    }
+  if ($alertExists) {
+    Write-Log "Skipping existing alert: $AlertName (already exists)" "Gray"
+    $status = "Skipped"
+    $action  = "Skipped"
+  } elseif ($PSCmdlet.ShouldProcess($AlertName, "Create scheduled query alert")) {
+    Write-Log "Creating new alert: $AlertName (Severity: $severityText)" "Cyan"
 
     try {
       # Convert multi-line query to single line and escape quotes for Azure CLI
       $queryEscaped = $Kql -replace "`r", "" -replace "`n", " " -replace '"', '\"'
       
-      # Phase 1 optimization: Use --no-wait for existing alert updates (fire and forget)
-      $noWaitFlag = if ($alertExists) { "--no-wait" } else { "" }
-      
-      $output = az monitor scheduled-query create `
-        -g $ResourceGroup `
-        -n $AlertName `
-        -l $Location `
-        --subscription $accountInfo.id `
-        --scopes $LawId `
-        --evaluation-frequency $EvalFrequency `
-        --window-size $WindowSize `
-        --severity $Severity `
-        --description $Description `
-        --condition "count 'Query1' > 0" `
-        --condition-query "Query1=$queryEscaped" `
-        --action-groups $AgId `
-        $noWaitFlag 2>&1
+      $azCmdArgs = @(
+        'monitor', 'scheduled-query', 'create',
+        '-g', $ResourceGroup, '-n', $AlertName, '-l', $Location,
+        '--subscription', $accountInfo.id, '--scopes', $LawId,
+        '--evaluation-frequency', $EvalFrequency, '--window-size', $WindowSize,
+        '--severity', "$Severity", '--description', $Description,
+        '--condition', "count 'Query1' > 0", '--condition-query', "Query1=$queryEscaped",
+        '--action-groups', $AgId
+      )
+      $output = az @azCmdArgs 2>&1
       
       if ($LASTEXITCODE -eq 0) {
         Write-Log "  ✓ Success" "Green"
         $status = "Success"
-        $action = if ($alertExists) { "Updated" } else { "Created" }
-        
-        if ($alertExists) {
-          $script:UpdatedAlerts += $AlertName
-        } else {
-          $script:NewlyCreatedAlerts += $AlertName
-        }
+        $action  = "Created"
+        $script:NewlyCreatedAlerts += $AlertName
       } else {
         Write-Log "  ✗ Failed: $output" "Red"
         $status = "Failed"
-        $action = "Failed"
+        $action  = "Failed"
       }
     }
     catch {
       Write-Log "  ✗ Error: $($_.Exception.Message)" "Red"
       $status = "Error"
-      $action = "Error"
+      $action  = "Error"
     }
   } else {
-    Write-Log "[WhatIf] Would $(if ($alertExists) { 'update' } else { 'create' }) alert: $AlertName" "Yellow"
+    Write-Log "[WhatIf] Would create alert: $AlertName" "Yellow"
     $status = "WhatIf"
-    $action = if ($alertExists) { "WouldUpdate" } else { "WouldCreate" }
+    $action  = "WouldCreate"
   }
 
   # Track for CSV export
@@ -415,7 +508,7 @@ function New-OrUpdate-ScheduledQueryAlert {
 # Alerts (name must match CodeSymbolic)
 # ----------------------------
 Write-Log "" 
-Write-Log "Creating/Updating AVD Alerts..." "Cyan"
+Write-Log "Processing AVD Alerts..." "Cyan"
 Write-Log "" 
 
 # Start timer for WhatIf status reporting
@@ -446,6 +539,19 @@ $alertDefinitions = @(
   @{ Name = "AVD-SessionHostResourceNotAvailable"; Description = "Detects when session host resources are unavailable. May indicate capacity issues, host health problems, or resource exhaustion."; CodeSymbolic = "SessionHostResourceNotAvailable" }
 )
 
+# Build a definitive per-alert existence map in the main scope before any parallelism.
+# This is the authoritative source - built with reliable $LASTEXITCODE using Test-AlertExists,
+# which itself uses the bulk-query cache or individual API calls as needed.
+$script:alertExistenceMap = @{}
+Write-Log "Verifying existence of all $($alertDefinitions.Count) alerts..." "Cyan"
+foreach ($alertDef in $alertDefinitions) {
+  $script:alertExistenceMap[$alertDef.Name] = Test-AlertExists -AlertName $alertDef.Name
+}
+$existingCount = ($script:alertExistenceMap.Values | Where-Object { $_ -eq $true }).Count
+$newCount = $alertDefinitions.Count - $existingCount
+Write-Log "Verification complete: $existingCount alert(s) already exist, $newCount will be created." "Gray"
+Write-Log "" 
+
 # Phase 2: Parallel processing for faster execution
 # Note: ForEach-Object -Parallel requires PowerShell 7+
 if ($PSVersionTable.PSVersion.Major -ge 7) {
@@ -454,23 +560,23 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
   # Parallel processing with throttling
   $throttleLimit = 5  # Process 5 alerts simultaneously
   $isWhatIf = $PSBoundParameters.ContainsKey('WhatIf')
-  # Capture $script:-scoped cache into a regular variable so $using: can reference it
-  $existingAlertNamesListLocal = $script:existingAlertNamesList
-  
+  # Capture the pre-verified existence map into a regular variable for $using: scope
+  $alertExistenceMapLocal = $script:alertExistenceMap
+
   $results = $alertDefinitions | ForEach-Object -ThrottleLimit $throttleLimit -Parallel {
     $alert = $_
-    
+
     # Import shared variables using $using: scope
-    $ResourceGroup = $using:ResourceGroup
-    $Location = $using:Location
-    $accountInfo = $using:accountInfo
-    $LawId = $using:LawId
-    $EvalFrequency = $using:EvalFrequency
-    $WindowSize = $using:WindowSize
-    $Severity = $using:Severity
-    $AgId = $using:AgId
-    $existingAlertNamesList = $using:existingAlertNamesListLocal
-    $isWhatIf = $using:isWhatIf
+    $ResourceGroup    = $using:ResourceGroup
+    $Location         = $using:Location
+    $accountInfo      = $using:accountInfo
+    $LawId            = $using:LawId
+    $EvalFrequency    = $using:EvalFrequency
+    $WindowSize       = $using:WindowSize
+    $Severity         = $using:Severity
+    $AgId             = $using:AgId
+    $alertExistenceMap = $using:alertExistenceMapLocal
+    $isWhatIf         = $using:isWhatIf
     
     # Build KQL query
     $kql = @"
@@ -480,8 +586,8 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
 | project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
 "@
     
-    # Check if alert exists
-    $alertExists = $existingAlertNamesList -contains $alert.Name
+    # Check if alert exists using the pre-verified existence map
+    $alertExists = $alertExistenceMap[$alert.Name] -eq $true
     
     $result = [PSCustomObject]@{
       AlertName = $alert.Name
@@ -495,34 +601,31 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
     if ($isWhatIf) {
       # WhatIf mode - don't execute Azure CLI commands
       $result.Status = "WhatIf"
-      $result.Action = if ($alertExists) { "WouldUpdate" } else { "WouldCreate" }
+      $result.Action = if ($alertExists) { "WouldSkip" } else { "WouldCreate" }
+    } elseif ($alertExists) {
+      # Alert already exists - skip it
+      $result.Status = "Skipped"
+      $result.Action = "Skipped"
     } else {
       # Execute actual Azure CLI commands
       try {
         # Convert multi-line query to single line and escape quotes
         $queryEscaped = $kql -replace "`r", "" -replace "`n", " " -replace '"', '\"'
         
-        # Use --no-wait for updates (Phase 1 optimization)
-        $noWaitFlag = if ($alertExists) { "--no-wait" } else { "" }
-        
-        $output = az monitor scheduled-query create `
-          -g $ResourceGroup `
-          -n $alert.Name `
-          -l $Location `
-          --subscription $accountInfo.id `
-          --scopes $LawId `
-          --evaluation-frequency $EvalFrequency `
-          --window-size $WindowSize `
-          --severity $Severity `
-          --description $alert.Description `
-          --condition "count 'Query1' > 0" `
-          --condition-query "Query1=$queryEscaped" `
-          --action-groups $AgId `
-          $noWaitFlag 2>&1
+        $azCmdArgs = @(
+          'monitor', 'scheduled-query', 'create',
+          '-g', $ResourceGroup, '-n', $alert.Name, '-l', $Location,
+          '--subscription', $accountInfo.id, '--scopes', $LawId,
+          '--evaluation-frequency', $EvalFrequency, '--window-size', $WindowSize,
+          '--severity', "$Severity", '--description', $alert.Description,
+          '--condition', "count 'Query1' > 0", '--condition-query', "Query1=$queryEscaped",
+          '--action-groups', $AgId
+        )
+        $output = az @azCmdArgs 2>&1
         
         if ($LASTEXITCODE -eq 0) {
           $result.Status = "Success"
-          $result.Action = if ($alertExists) { "Updated" } else { "Created" }
+          $result.Action = "Created"
         } else {
           $result.Status = "Failed"
           $result.Action = "Failed"
@@ -531,6 +634,7 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
       } catch {
         $result.Status = "Error"
         $result.Action = "Error"
+        $result.ErrorOutput = $_.Exception.Message
       }
     }
     
@@ -548,9 +652,6 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
     # Add to tracking arrays
     if ($result.AlreadyExisted) {
       $ExistingAlerts += $result.AlertName
-      if ($result.Status -eq "Success") {
-        $UpdatedAlerts += $result.AlertName
-      }
     } elseif ($result.Status -eq "Success") {
       $NewlyCreatedAlerts += $result.AlertName
     }
@@ -561,13 +662,11 @@ union isfuzzy=true WVDHostRegistration, WVDErrors
     }
     
     if ($result.Status -eq "WhatIf") {
-      Write-Log "[WhatIf] Would $(if ($result.AlreadyExisted) { 'update' } else { 'create' }) alert: $($result.AlertName)" "Yellow"
+      Write-Log "[WhatIf] Would $(if ($result.AlreadyExisted) { 'skip (already exists)' } else { 'create' }) alert: $($result.AlertName)" "Yellow"
+    } elseif ($result.Status -eq "Skipped") {
+      Write-Log "Skipping existing alert: $($result.AlertName) (already exists)" "Gray"
     } else {
-      if ($result.AlreadyExisted) {
-        Write-Log "Updating existing alert: $($result.AlertName) (Severity: $severityText)" "Yellow"
-      } else {
-        Write-Log "Creating new alert: $($result.AlertName) (Severity: $severityText)" "Cyan"
-      }
+      Write-Log "Creating new alert: $($result.AlertName) (Severity: $severityText)" "Cyan"
       
       if ($result.Status -eq "Success") {
         Write-Log "  ✓ Success" "Green"
@@ -659,18 +758,15 @@ Write-Log "Email Recipient: $EmailTo" "White"
 Write-Log "Total Alerts Processed: $($AlertResults.Count)" "White"
 Write-Log "" 
 
-$successCount = ($AlertResults | Where-Object Status -eq "Success").Count
 $failedCount = ($AlertResults | Where-Object Status -eq "Failed").Count
 $whatIfCount = ($AlertResults | Where-Object Status -eq "WhatIf").Count
 
 if ($whatIfCount -gt 0) {
-  Write-Log "WhatIf Mode: $whatIfCount alerts would be created/updated" "Yellow"
+  Write-Log "WhatIf Mode: $whatIfCount alert(s) would be created; $($ExistingAlerts.Count) would be skipped (already exist)" "Yellow"
 } else {
   Write-Log "=== Alert Statistics ===" "Cyan"
-  Write-Log "Success: $successCount" "Green"
-  Write-Log "Alerts Already Existed: $($ExistingAlerts.Count)" "Yellow"
   Write-Log "Alerts Newly Created: $($NewlyCreatedAlerts.Count)" "Green"
-  Write-Log "Alerts Updated: $($UpdatedAlerts.Count)" "Cyan"
+  Write-Log "Alerts Skipped (already existed): $($ExistingAlerts.Count)" "Yellow"
   if ($failedCount -gt 0) {
     Write-Log "Failed: $failedCount" "Red"
   }
@@ -678,7 +774,7 @@ if ($whatIfCount -gt 0) {
   if ($ExistingAlerts.Count -gt 0) {
     Write-Log "" 
     Write-Log "=== Existing Alerts Detected ===" "Yellow"
-    Write-Log "The following $($ExistingAlerts.Count) alert(s) were updated (already existed):" "Yellow"
+    Write-Log "The following $($ExistingAlerts.Count) alert(s) were skipped (already exist):" "Yellow"
     foreach ($alert in $ExistingAlerts) {
       Write-Log "  - $alert" "Gray"
     }
