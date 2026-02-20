@@ -275,7 +275,7 @@ try {
   $_listJobRg    = $ResourceGroup
   $_listJobSubId = $accountInfo.id
   $listJob = Start-Job -ScriptBlock {
-    az monitor scheduled-query list -g $using:_listJobRg --subscription $using:_listJobSubId --query "[?starts_with(name,'AVD-')].name" -o tsv 2>$null
+    az monitor scheduled-query list -g $using:_listJobRg --subscription $using:_listJobSubId --query "[?starts_with(name, 'AVD-')].name" -o tsv 2>$null
   }
 
   $completed = Wait-Job $listJob -Timeout 25
@@ -293,8 +293,8 @@ try {
     }
   } else {
     Stop-Job $listJob -ErrorAction SilentlyContinue
-    Write-Host "[Pre-flight] Alert list query timed out - will attempt creation for all alerts (conflicts handled safely)" -ForegroundColor Yellow
-    $script:existingAlertNamesList = @()  # Treat as empty; conflict errors during creation are handled gracefully
+    Write-Host "[Pre-flight] Alert list query timed out - will check each alert individually" -ForegroundColor Yellow
+    $script:existingAlertNamesList = $null  # Trigger individual API calls for each alert
   }
   Remove-Job $listJob -Force -ErrorAction SilentlyContinue
 } catch {
@@ -606,7 +606,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
     
     # Build KQL query
     $kql = @"
-union isfuzzy=true  WVDErrors
+WVDErrors
 | where TimeGenerated > ago(5m)
 | where CodeSymbolic == '$($alert.CodeSymbolic)'
 | project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
@@ -748,7 +748,7 @@ union isfuzzy=true  WVDErrors
     }
     
     $kql = @"
-union isfuzzy=true  WVDErrors
+WVDErrors
 | where TimeGenerated > ago(5m)
 | where CodeSymbolic == '$($alert.CodeSymbolic)'
 | project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
@@ -802,6 +802,15 @@ if ($whatIfCount -gt 0) {
   Write-Log "Alerts Skipped (already existed): $($ExistingAlerts.Count)" "Yellow"
   if ($failedCount -gt 0) {
     Write-Log "Failed: $failedCount" "Red"
+  }
+  
+  if ($NewlyCreatedAlerts.Count -gt 0) {
+    Write-Log "" 
+    Write-Log "=== Newly Created Alerts ===" "Green"
+    Write-Log "The following $($NewlyCreatedAlerts.Count) alert(s) were created:" "Green"
+    foreach ($alert in $NewlyCreatedAlerts) {
+      Write-Log "  - $alert" "Gray"
+    }
   }
   
   if ($ExistingAlerts.Count -gt 0) {
