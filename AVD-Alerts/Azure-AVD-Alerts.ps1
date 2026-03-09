@@ -56,8 +56,11 @@ QUICK START:
 .PARAMETER CsvPath
   Path for CSV export of created alerts.
 
+.PARAMETER CreateOnly
+  Controls behavior for existing alerts. Default: $true (existing alerts are skipped and unchanged).
+
 .PARAMETER WhatIf
-  Preview changes without creating/updating alerts.
+  Preview changes without creating or modifying alerts.
 
 .EXAMPLE
   # Run with default parameters (after updating defaults in script)
@@ -80,7 +83,7 @@ QUICK START:
 param(
   [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
-  [ValidatePattern('^[\w-\.]+@([\w-]+\.)+[\w-]{2,}$')]
+  [ValidatePattern('^[^@\s]+@[^@\s]+\.[^@\s]+$')]
   [string]$EmailTo = "your-email@domain.com",
 
   [Parameter(Mandatory = $false)]
@@ -109,6 +112,9 @@ param(
   [int]$Severity = 1,
 
   [Parameter(Mandatory = $false)]
+  [bool]$CreateOnly = $true,
+
+  [Parameter(Mandatory = $false)]
   [string]$CsvPath
 )
 
@@ -133,6 +139,18 @@ if (-not $CsvPath) {
 # Check 1: Verify Azure CLI is installed
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
   throw "Azure CLI not found. Please install from https://learn.microsoft.com/cli/azure/install-azure-cli"
+}
+
+# Check 1b: Verify required Azure CLI extension is available
+Write-Host "[Pre-flight] Checking required Azure CLI extension: scheduled-query..." -ForegroundColor Cyan
+az extension show --name scheduled-query -o none 2>$null
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "[Pre-flight] 'scheduled-query' extension not found. Installing..." -ForegroundColor Yellow
+  az extension add --name scheduled-query --yes -o none 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Required Azure CLI extension 'scheduled-query' is not available and could not be installed."
+  }
+  Write-Host "[Pre-flight] 'scheduled-query' extension installed." -ForegroundColor Green
 }
 
 # Check 2: Verify Azure login
@@ -259,8 +277,8 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($roleAssignmentsJson)) 
 }
 
 # Alert cadence
-$EvalFrequency = "PT5M"   # every 5 minutes
-$WindowSize    = "PT5M"   # evaluation window (5 minutes)
+$EvalFrequency = "PT10M"  # every 10 minutes
+$WindowSize    = "PT15M"  # evaluation window (15 minutes)
 
 # Track created alerts for CSV export
 $AlertResults = @()
@@ -443,9 +461,9 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
 }
 
 # ----------------------------
-# Helper: create/update scheduled query alert (Log Alert v2)
+# Helper: create scheduled query alert only (skip if exists)
 # ----------------------------
-function New-OrUpdate-ScheduledQueryAlert {
+function New-OrSkip-ScheduledQueryAlert {
   [CmdletBinding(SupportsShouldProcess)]
   param(
     [Parameter(Mandatory)][string]$AlertName,
@@ -468,8 +486,8 @@ function New-OrUpdate-ScheduledQueryAlert {
     $script:ExistingAlerts += $AlertName
   }
 
-  if ($alertExists) {
-    Write-Log "Skipping existing alert: $AlertName (already exists)" "Gray"
+  if ($alertExists -and $CreateOnly) {
+    Write-Log "Create-only mode: skipping existing alert: $AlertName" "Gray"
     $status = "Skipped"
     $action  = "Skipped"
   } elseif ($PSCmdlet.ShouldProcess($AlertName, "Create scheduled query alert")) {
@@ -531,7 +549,7 @@ function New-OrUpdate-ScheduledQueryAlert {
 }
 
 # ----------------------------
-# Alerts (name must match CodeSymbolic)
+# Alerts
 # ----------------------------
 Write-Log "" 
 Write-Log "Processing AVD Alerts..." "Cyan"
@@ -543,26 +561,56 @@ $lastStatusReport = $alertProcessingStart
 
 # Alert definitions
 $alertDefinitions = @(
-  @{ Name = "AVD-PasswordMustChange"; Description = "Detects users who must change their password before logging into AVD. Triggers when a user's password policy requires a mandatory change."; CodeSymbolic = "PasswordMustChange" },
-  @{ Name = "AVD-AccountLockedOut"; Description = "Detects user accounts that are locked out due to failed login attempts. Indicates potential security issues or users needing assistance."; CodeSymbolic = "AccountLockedOut" },
-  @{ Name = "AVD-ConnectionFailedPersonalDesktopFailedToBeStarted"; Description = "Detects when a personal desktop VM fails to start for a connection attempt. May indicate VM configuration issues or Azure capacity problems."; CodeSymbolic = "ConnectionFailedPersonalDesktopFailedToBeStarted" },
-  @{ Name = "AVD-PasswordExpired"; Description = "Detects users attempting to connect with expired passwords. Users must reset their password before accessing AVD."; CodeSymbolic = "PasswordExpired" },
-  @{ Name = "AVD-AccountDisabled"; Description = "Detects connection attempts from disabled user accounts. Indicates terminated users trying to access AVD or account provisioning issues."; CodeSymbolic = "AccountDisabled" },
-  @{ Name = "AVD-ConnectionFailedNoHealthyRdshAvailable"; Description = "Detects when no healthy session hosts are available in a host pool. Critical issue preventing all user connections - requires immediate attention."; CodeSymbolic = "ConnectionFailedNoHealthyRdshAvailable" },
-  @{ Name = "AVD-ERROR_SHARING_VIOLATION"; Description = "Detects file sharing violations during user profile loading or application access. Often related to FSLogix profile conflicts or locked files."; CodeSymbolic = "ERROR_SHARING_VIOLATION" },
-  @{ Name = "AVD-LogonFailed"; Description = "Detects failed user logon attempts to AVD session hosts. May indicate authentication issues, incorrect credentials, or account problems."; CodeSymbolic = "LogonFailed" },
-  @{ Name = "AVD-UnloadWaitingForUserAction"; Description = "Detects when FSLogix profile unload is delayed waiting for user action. User may have unsaved work or active processes blocking logoff."; CodeSymbolic = "UnloadWaitingForUserAction" },
-  @{ Name = "AVD-ConnectionFailedUserNotAuthorized"; Description = "Detects unauthorized connection attempts to AVD. User lacks permissions on the application group or workspace."; CodeSymbolic = "ConnectionFailedUserNotAuthorized" },
-  @{ Name = "AVD-ConnectionFailedNoPreAssignedPersonalDesktopForUser"; Description = "Detects connection attempts when user has no personal desktop assigned. Occurs in personal host pools without desktop assignment."; CodeSymbolic = "ConnectionFailedNoPreAssignedPersonalDesktopForUser" },
-  @{ Name = "AVD-ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed"; Description = "Detects when client connects too late and reverse connection is already closed. May indicate network latency or timeout issues."; CodeSymbolic = "ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed" },
-  @{ Name = "AVD-GetInputDeviceHandlesError"; Description = "Detects errors initializing input device handles. May indicate driver issues or peripheral compatibility problems."; CodeSymbolic = "GetInputDeviceHandlesError" },
-  @{ Name = "AVD-GraphicsCapsNotReceived"; Description = "Detects when graphics capabilities are not received during session initialization. May indicate GPU or graphics driver issues."; CodeSymbolic = "GraphicsCapsNotReceived" },
-  @{ Name = "AVD-InvalidAuthToken"; Description = "Detects invalid or expired authentication tokens. Indicates authentication token validation failures or token expiration issues."; CodeSymbolic = "InvalidAuthToken" },
-  @{ Name = "AVD-InvalidCredentials"; Description = "Detects login attempts with invalid credentials (wrong username or password). Indicates user credential issues or potential security concerns."; CodeSymbolic = "InvalidCredentials" },
-  @{ Name = "AVD-LogonTypeNotGranted"; Description = "Detects when requested logon type is not granted by policy. User may lack required logon rights or policy restrictions are in place."; CodeSymbolic = "LogonTypeNotGranted" },
-  @{ Name = "AVD-NotAuthorizedForLogon"; Description = "Detects users not authorized for logon. May indicate missing logon permissions or policy restrictions preventing access."; CodeSymbolic = "NotAuthorizedForLogon" },
-  @{ Name = "AVD-OutOfMemory"; Description = "Detects session hosts running out of memory. Critical issue requiring immediate attention - may cause session crashes or prevent new connections."; CodeSymbolic = "OutOfMemory" },
-  @{ Name = "AVD-SessionHostResourceNotAvailable"; Description = "Detects when session host resources are unavailable. May indicate capacity issues, host health problems, or resource exhaustion."; CodeSymbolic = "SessionHostResourceNotAvailable" }
+  @{ Name = "AVD-Category-AuthenticationIdentity"; Description = "Consolidated authentication and identity failures in AVD."; Kql = @"
+WVDErrors
+| where TimeGenerated > ago(15m)
+| where CodeSymbolic in ("PasswordMustChange", "PasswordExpired", "InvalidAuthToken", "InvalidCredentials", "AccountLockedOut", "AccountDisabled", "LogonFailed", "AuthenticationLogonFailed", "NoAuthenticatingAuthority", "LocalSecurityAuthorityError")
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@ },
+  @{ Name = "AVD-Category-AuthorizationPolicy"; Description = "Consolidated authorization and logon rights failures in AVD."; Kql = @"
+WVDErrors
+| where TimeGenerated > ago(15m)
+| where CodeSymbolic in ("ConnectionFailedUserNotAuthorized", "LogonTypeNotGranted", "NotAuthorizedForLogon")
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@ },
+  @{ Name = "AVD-Category-ConnectionNetworkGateway"; Description = "Consolidated AVD client, DNS, reverse connect, and gateway transport failures."; Kql = @"
+WVDErrors
+| where TimeGenerated > ago(15m)
+| where CodeSymbolic in ("Client", "DnsLookupFailed", "GatewayServerNotFound", "ReverseConnectDnsLookupFailed", "ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed")
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@ },
+  @{ Name = "AVD-Category-SessionHostHealthCapacity"; Description = "Consolidated session host availability and capacity issues."; Kql = @"
+WVDErrors
+| where TimeGenerated > ago(15m)
+| where CodeSymbolic in ("ConnectionFailedNoHealthyRdshAvailable", "SessionHostResourceNotAvailable", "OutOfMemory")
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@ },
+  @{ Name = "AVD-Category-PersonalDesktopAssignment"; Description = "Consolidated personal desktop assignment and startup failures."; Kql = @"
+WVDErrors
+| where TimeGenerated > ago(15m)
+| where CodeSymbolic in ("ConnectionFailedPersonalDesktopFailedToBeStarted", "ConnectionFailedNoPreAssignedPersonalDesktopForUser")
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@ },
+  @{ Name = "AVD-Category-DeviceGraphicsInput"; Description = "Consolidated input and graphics subsystem failures."; Kql = @"
+WVDErrors
+| where TimeGenerated > ago(15m)
+| where CodeSymbolic in ("GetInputDeviceHandlesError", "GraphicsCapsNotReceived", "GraphicsSubsystemFailed", "DWMProcessAccessFailure")
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@ },
+  @{ Name = "AVD-Category-FSLogixProfileStorage"; Description = "Consolidated FSLogix profile and storage attach/detach/access issues."; Kql = @"
+WVDErrors
+| where TimeGenerated > ago(15m)
+| where CodeSymbolic in ("ERROR_SHARING_VIOLATION", "UnloadWaitingForUserAction", "ERROR_ACCESS_DENIED", "ERROR_PATH_NOT_FOUND", "ERROR_FILE_NOT_FOUND", "ERROR_BAD_NETPATH", "ERROR_BAD_NET_NAME", "ERROR_NETNAME_DELETED", "ERROR_DISK_FULL", "ERROR_LOCK_VIOLATION")
+  or Source has "fslogix"
+  or Message has_any ("frxsvc", "frxshell", "temporary profile", "default profile", "profile failed", "vhd attach", "vhdx attach", "container attach", "container detach", "odfc")
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@ },
+  @{ Name = "AVD-Category-UnknownUnclassified"; Description = "Consolidated unknown or unclassified AVD error symbols for triage."; Kql = @"
+WVDErrors
+| where TimeGenerated > ago(15m)
+| where CodeSymbolic == "Unknown CodeSymbolic - review Message for details."
+| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
+"@ }
 )
 
 # Build a definitive per-alert existence map in the main scope before any parallelism.
@@ -586,6 +634,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
   # Parallel processing with throttling
   $throttleLimit = 5  # Process 5 alerts simultaneously
   $isWhatIf = $PSBoundParameters.ContainsKey('WhatIf')
+  $createOnlyLocal = $CreateOnly
   # Capture the pre-verified existence map into a regular variable for $using: scope
   $alertExistenceMapLocal = $script:alertExistenceMap
 
@@ -600,17 +649,22 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
     $EvalFrequency    = $using:EvalFrequency
     $WindowSize       = $using:WindowSize
     $Severity         = $using:Severity
+    $CreateOnly       = $using:createOnlyLocal
     $AgId             = $using:AgId
     $alertExistenceMap = $using:alertExistenceMapLocal
     $isWhatIf         = $using:isWhatIf
     
-    # Build KQL query
-    $kql = @"
+    # Build KQL query (custom per alert or default CodeSymbolic-based)
+    if ($alert.ContainsKey('Kql')) {
+      $kql = $alert.Kql
+    } else {
+      $kql = @"
 WVDErrors
-| where TimeGenerated > ago(5m)
+| where TimeGenerated > ago(15m)
 | where CodeSymbolic == '$($alert.CodeSymbolic)'
 | project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
 "@
+    }
     
     # Check if alert exists using the pre-verified existence map
     $alertExists = $alertExistenceMap[$alert.Name] -eq $true
@@ -627,8 +681,12 @@ WVDErrors
     if ($isWhatIf) {
       # WhatIf mode - don't execute Azure CLI commands
       $result.Status = "WhatIf"
-      $result.Action = if ($alertExists) { "WouldSkip" } else { "WouldCreate" }
-    } elseif ($alertExists) {
+      if ($alertExists -and $CreateOnly) {
+        $result.Action = "WouldSkip"
+      } else {
+        $result.Action = "WouldCreate"
+      }
+    } elseif ($alertExists -and $CreateOnly) {
       # Alert already exists - skip it
       $result.Status = "Skipped"
       $result.Action = "Skipped"
@@ -697,7 +755,7 @@ WVDErrors
     if ($result.Status -eq "WhatIf") {
       Write-Log "[WhatIf] Would $(if ($result.AlreadyExisted) { 'skip (already exists)' } else { 'create' }) alert: $($result.AlertName)" "Yellow"
     } elseif ($result.Status -eq "Skipped") {
-      Write-Log "Skipping existing alert: $($result.AlertName) (already exists)" "Gray"
+      Write-Log "Create-only mode: skipping existing alert: $($result.AlertName)" "Gray"
     } else {
       Write-Log "Creating new alert: $($result.AlertName) (Severity: $severityText)" "Cyan"
       
@@ -729,7 +787,7 @@ WVDErrors
   foreach ($alert in $alertDefinitions) {
     $alertCount++
     $percentComplete = [Math]::Round(($alertCount / $alertDefinitions.Count) * 100)
-    Write-Progress -Activity "Creating/Updating AVD Alerts" -Status "Processing alert $alertCount of $($alertDefinitions.Count): $($alert.Name)" -PercentComplete $percentComplete
+    Write-Progress -Activity "Creating AVD Alerts (create-only)" -Status "Processing alert $alertCount of $($alertDefinitions.Count): $($alert.Name)" -PercentComplete $percentComplete
     
     # Status report for WhatIf mode if running longer than 30 seconds
     if ($PSBoundParameters.ContainsKey('WhatIf')) {
@@ -747,17 +805,21 @@ WVDErrors
       }
     }
     
-    $kql = @"
+    if ($alert.ContainsKey('Kql')) {
+      $kql = $alert.Kql
+    } else {
+      $kql = @"
 WVDErrors
-| where TimeGenerated > ago(5m)
+| where TimeGenerated > ago(15m)
 | where CodeSymbolic == '$($alert.CodeSymbolic)'
 | project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
 "@
+    }
     
-    New-OrUpdate-ScheduledQueryAlert -AlertName $alert.Name -Description $alert.Description -Kql $kql
+    New-OrSkip-ScheduledQueryAlert -AlertName $alert.Name -Description $alert.Description -Kql $kql
   }
   
-  Write-Progress -Activity "Creating/Updating AVD Alerts" -Completed
+  Write-Progress -Activity "Creating AVD Alerts (create-only)" -Completed
 }
 
 # ----------------------------
