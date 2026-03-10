@@ -2,6 +2,8 @@
 
 This folder contains production-focused PowerShell scripts for deploying and extending Azure Virtual Desktop (AVD) alerting.
 
+The **AVD Alerts Scripts Guide** is best used as a complementary tool alongside the built-in Azure Virtual Desktop Insights. The built-in **Azure Virtual Desktop Insights** gives administrators an end-to-end troubleshooting view of the environment, making it easier to follow issues across host pools, session hosts, user sessions, and diagnostic data in one place. Theese alert scripts add a **proactive layer** by querying AVD diagnostic logs in Log Analytics with KQL and generating alerts when known warning signs or failures appear. **This helps catch problems earlier, before they snowball into larger stability or user-impact issues**.
+
 ## What Each Script Does
 
 1. `Azure-AVD-Alerts.ps1`

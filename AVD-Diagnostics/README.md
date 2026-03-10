@@ -2,7 +2,19 @@
 
 ## Overview
 
-This tool discovers AVD resources in your Azure subscription and configures diagnostic settings to send logs and metrics to a Log Analytics workspace. It enforces the use of `allLogs` category group wherever supported for comprehensive logging.
+Ideally, the Azure Virtual Desktop Configuration Workbook, a built-in tool in Azure Virtual Desktop, should be used to validate and configure the monitoring setup required for Azure Virtual Desktop Insights, including diagnostic settings, data collection rules, and Log Analytics integration.
+
+Alternatively, the AVD Diagnostics Configuration script can be used to programmatically locate all host pools, application groups, and workspaces within a subscription and enable the required diagnostic settings to collect logs in a single operation.
+
+The AVD Diagnostics Configuration script **enables diagnostic settings** for the following Azure Virtual Desktop resource types:
+
+- Microsoft.DesktopVirtualization/hostPools
+- Microsoft.DesktopVirtualization/applicationGroups
+- Microsoft.DesktopVirtualization/workspaces
+
+This ensures that telemetry and operational logs are sent to Log Analytics, allowing administrators to monitor Azure Virtual Desktop environment health, performance, and user experience.
+
+This configuration script *does not enable* Azure Monitor Insights or deploy the AMA agent or a Data Collection Rule (DCR) required to capture *host-level performance metrics*.
 
 ## Purpose
 
