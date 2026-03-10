@@ -3,6 +3,8 @@
 ==============================================================================
 SCRIPT VERSION: 2.1
 LAST UPDATED: February 2026
+REPOSITORY: https://github.com/AzaryaShaulov/AVD
+DISCLAIMER: This script is provided AS IS, without warranties or support guarantees.
 ==============================================================================
 QUICK START:
 1. Update the default parameter values in the script with your values:
@@ -21,12 +23,13 @@ QUICK START:
      -EmailTo "admin@contoso.com" -ResourceGroup "rg-avd" -LawName "law-avd" -Location "eastus2"
 ==============================================================================
 .SYNOPSIS
-  Creates scheduled query alerts for Azure Virtual Desktop monitoring.
-  Repository: https://github.com/AzaryaShaulov/AVD
+  Deploys and maintains Azure Monitor scheduled query alerts for Azure Virtual Desktop (AVD).
 
 .DESCRIPTION
-  Configures Log Analytics-based alerts for common AVD error conditions and sends
-  notifications via email action group. Requires Azure CLI and appropriate permissions.
+  Creates and updates Log Analytics-based AVD category alerts, configures the email action
+  group, and optionally configures a detailed webhook action group.
+
+  The script requires Azure CLI and sufficient Azure RBAC permissions.
   
   REQUIRED: Update default parameter values (EmailTo, ResourceGroup, LawName, Location)
   in the script, or pass them as arguments when running the script.
@@ -40,6 +43,21 @@ QUICK START:
 .PARAMETER ActionGroupName
   Name of the Azure Monitor action group. If it already exists, the specified email will be
   added to it. If it does not exist, a new action group will be created. Default: "AVD-Alerts"
+
+.PARAMETER DetailedResultsWebhookUrl
+  Optional HTTPS webhook URL for detailed alert payload delivery (for example, a Logic App
+  or Automation endpoint that can email query results).
+
+.PARAMETER DetailedActionGroupName
+  Name of the optional webhook action group used for detailed notifications.
+  Default: "AVD-Alerts-Detailed"
+
+.PARAMETER DetailedWebhookReceiverName
+  Receiver name for the webhook action in the detailed action group.
+  Default: "AVDAlertsDetailedWebhook"
+
+.PARAMETER UseCommonAlertSchemaForWebhook
+  When true, webhook receiver uses Azure Monitor common alert schema.
 
 .PARAMETER ResourceGroup
   Resource group containing the Log Analytics workspace and action group.
@@ -77,6 +95,10 @@ QUICK START:
 .EXAMPLE
   # Preview changes without creating alerts
   .\Azure-AVD-Alerts.ps1 -Severity 0 -WhatIf
+
+.EXAMPLE
+  # Send standard email alerts and detailed payloads to webhook endpoint
+  .\Azure-AVD-Alerts.ps1 -EmailTo "admin@contoso.com" -DetailedResultsWebhookUrl "https://contoso.logic.azure.com/workflows/..."
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -94,6 +116,21 @@ param(
   [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
   [string]$ActionGroupName = "AVD-Alerts",
+
+  [Parameter(Mandatory = $false)]
+  [ValidatePattern('^$|^https?://.+')]
+  [string]$DetailedResultsWebhookUrl,
+
+  [Parameter(Mandatory = $false)]
+  [ValidateNotNullOrEmpty()]
+  [string]$DetailedActionGroupName = "AVD-Alerts-Detailed",
+
+  [Parameter(Mandatory = $false)]
+  [ValidateNotNullOrEmpty()]
+  [string]$DetailedWebhookReceiverName = "AVDAlertsDetailedWebhook",
+
+  [Parameter(Mandatory = $false)]
+  [bool]$UseCommonAlertSchemaForWebhook = $true,
 
   [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
@@ -461,6 +498,103 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
 }
 
 # ----------------------------
+# Optional detailed webhook Action Group
+# ----------------------------
+$DetailedAgId = $null
+if (-not [string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
+  Write-Log "Detailed Webhook URL: $DetailedResultsWebhookUrl" "Cyan"
+  Write-Log "Detailed Action Group: $DetailedActionGroupName" "Cyan"
+
+  if ($PSCmdlet.ShouldProcess($DetailedActionGroupName, "Create or update detailed webhook action group")) {
+    $detailedAgJson = az monitor action-group show -g $ResourceGroup -n $DetailedActionGroupName --subscription $accountInfo.id -o json 2>$null
+    $detailedAgExists = ($LASTEXITCODE -eq 0)
+
+    if (-not $detailedAgExists) {
+      Write-Log "Detailed action group '$DetailedActionGroupName' not found - creating..." "Yellow"
+      $createArgs = @(
+        'monitor', 'action-group', 'create',
+        '-g', $ResourceGroup, '-n', $DetailedActionGroupName,
+        '--subscription', $accountInfo.id,
+        '--short-name', 'AVDDetl',
+        '--action', 'webhook', $DetailedWebhookReceiverName, ('"' + $DetailedResultsWebhookUrl + '"')
+      )
+      if ($UseCommonAlertSchemaForWebhook) {
+        $createArgs += 'usecommonalertschema'
+      }
+      $detailedAgCreateOutput = az @createArgs 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        throw "Failed to create detailed webhook action group: $detailedAgCreateOutput"
+      }
+      Write-Log "Detailed action group '$DetailedActionGroupName' created." "Green"
+      $detailedAgJson = az monitor action-group show -g $ResourceGroup -n $DetailedActionGroupName --subscription $accountInfo.id -o json 2>$null
+    } else {
+      Write-Log "Detailed action group '$DetailedActionGroupName' already exists - validating webhook receiver..." "Gray"
+      $detailedAg = $detailedAgJson | ConvertFrom-Json
+      $webhookReceivers = @($detailedAg.webhookReceivers)
+      $receiverByName = $webhookReceivers | Where-Object { $_.name -eq $DetailedWebhookReceiverName } | Select-Object -First 1
+      $receiverWithUrl = $webhookReceivers | Where-Object { $_.serviceUri -eq $DetailedResultsWebhookUrl } | Select-Object -First 1
+
+      # Self-heal: remove legacy receiver name to prevent duplicate webhook notifications.
+      $legacyDetailedWebhookReceiverName = 'AVDAlertDetails'
+      if ($DetailedWebhookReceiverName -ne $legacyDetailedWebhookReceiverName) {
+        $legacyReceiver = $webhookReceivers | Where-Object { $_.name -eq $legacyDetailedWebhookReceiverName } | Select-Object -First 1
+        if ($null -ne $legacyReceiver) {
+          Write-Log "Legacy detailed webhook receiver '$legacyDetailedWebhookReceiverName' found - removing to avoid duplicates." "Yellow"
+          az monitor action-group update -g $ResourceGroup -n $DetailedActionGroupName --subscription $accountInfo.id --remove-action $legacyDetailedWebhookReceiverName 2>&1 | Out-Null
+        }
+      }
+
+      if ($null -eq $receiverWithUrl) {
+        if ($null -ne $receiverByName) {
+          Write-Log "Webhook receiver name exists with different URL - replacing receiver '$DetailedWebhookReceiverName'." "Yellow"
+          az monitor action-group update -g $ResourceGroup -n $DetailedActionGroupName --subscription $accountInfo.id --remove-action $DetailedWebhookReceiverName 2>&1 | Out-Null
+        }
+
+        $updateArgs = @(
+          'monitor', 'action-group', 'update',
+          '-g', $ResourceGroup, '-n', $DetailedActionGroupName,
+          '--subscription', $accountInfo.id,
+          '--add-action', 'webhook', $DetailedWebhookReceiverName, ('"' + $DetailedResultsWebhookUrl + '"')
+        )
+        if ($UseCommonAlertSchemaForWebhook) {
+          $updateArgs += 'usecommonalertschema'
+        }
+        $detailedAgUpdateOutput = az @updateArgs 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          Write-Log "Warning: Failed to add/update webhook receiver: $detailedAgUpdateOutput" "Yellow"
+        } else {
+          Write-Log "Webhook receiver ensured on '$DetailedActionGroupName'." "Green"
+        }
+      } else {
+        Write-Log "Webhook URL already present on detailed action group - no change needed." "Gray"
+      }
+    }
+
+    $DetailedAgId = az monitor action-group show `
+      -g $ResourceGroup `
+      -n $DetailedActionGroupName `
+      --subscription $accountInfo.id `
+      --query id -o tsv 2>$null
+
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($DetailedAgId)) {
+      throw "Failed to retrieve detailed action group ID"
+    }
+
+    Write-Log "Detailed Action Group ID: $DetailedAgId" "Gray"
+  } else {
+    Write-Log "[WhatIf] Would create/update detailed action group: $DetailedActionGroupName" "Yellow"
+    $subId = $accountInfo.id
+    $DetailedAgId = "/subscriptions/$subId/resourceGroups/$ResourceGroup/providers/microsoft.insights/actionGroups/$DetailedActionGroupName"
+    Write-Log "Detailed Action Group ID (simulated): $DetailedAgId" "Gray"
+  }
+}
+
+$ActionGroupIds = @($AgId)
+if (-not [string]::IsNullOrWhiteSpace($DetailedAgId)) {
+  $ActionGroupIds += $DetailedAgId
+}
+
+# ----------------------------
 # Helper: create scheduled query alert only (skip if exists)
 # ----------------------------
 function New-OrSkip-ScheduledQueryAlert {
@@ -503,9 +637,10 @@ function New-OrSkip-ScheduledQueryAlert {
         '--subscription', $accountInfo.id, '--scopes', $LawId,
         '--evaluation-frequency', $EvalFrequency, '--window-size', $WindowSize,
         '--severity', "$Severity", '--description', $Description,
-        '--condition', "count 'Query1' > 0", '--condition-query', "Query1=$queryEscaped",
-        '--action-groups', $AgId
+        '--condition', "count 'Query1' > 0", '--condition-query', "Query1=$queryEscaped"
       )
+      $azCmdArgs += '--action-groups'
+      $azCmdArgs += $ActionGroupIds
       $output = az @azCmdArgs 2>&1
       
       if ($LASTEXITCODE -eq 0) {
@@ -561,56 +696,14 @@ $lastStatusReport = $alertProcessingStart
 
 # Alert definitions
 $alertDefinitions = @(
-  @{ Name = "AVD-Category-AuthenticationIdentity"; Description = "Consolidated authentication and identity failures in AVD."; Kql = @"
-WVDErrors
-| where TimeGenerated > ago(15m)
-| where CodeSymbolic in ("PasswordMustChange", "PasswordExpired", "InvalidAuthToken", "InvalidCredentials", "AccountLockedOut", "AccountDisabled", "LogonFailed", "AuthenticationLogonFailed", "NoAuthenticatingAuthority", "LocalSecurityAuthorityError")
-| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
-"@ },
-  @{ Name = "AVD-Category-AuthorizationPolicy"; Description = "Consolidated authorization and logon rights failures in AVD."; Kql = @"
-WVDErrors
-| where TimeGenerated > ago(15m)
-| where CodeSymbolic in ("ConnectionFailedUserNotAuthorized", "LogonTypeNotGranted", "NotAuthorizedForLogon")
-| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
-"@ },
-  @{ Name = "AVD-Category-ConnectionNetworkGateway"; Description = "Consolidated AVD client, DNS, reverse connect, and gateway transport failures."; Kql = @"
-WVDErrors
-| where TimeGenerated > ago(15m)
-| where CodeSymbolic in ("Client", "DnsLookupFailed", "GatewayServerNotFound", "ReverseConnectDnsLookupFailed", "ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed")
-| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
-"@ },
-  @{ Name = "AVD-Category-SessionHostHealthCapacity"; Description = "Consolidated session host availability and capacity issues."; Kql = @"
-WVDErrors
-| where TimeGenerated > ago(15m)
-| where CodeSymbolic in ("ConnectionFailedNoHealthyRdshAvailable", "SessionHostResourceNotAvailable", "OutOfMemory")
-| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
-"@ },
-  @{ Name = "AVD-Category-PersonalDesktopAssignment"; Description = "Consolidated personal desktop assignment and startup failures."; Kql = @"
-WVDErrors
-| where TimeGenerated > ago(15m)
-| where CodeSymbolic in ("ConnectionFailedPersonalDesktopFailedToBeStarted", "ConnectionFailedNoPreAssignedPersonalDesktopForUser")
-| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
-"@ },
-  @{ Name = "AVD-Category-DeviceGraphicsInput"; Description = "Consolidated input and graphics subsystem failures."; Kql = @"
-WVDErrors
-| where TimeGenerated > ago(15m)
-| where CodeSymbolic in ("GetInputDeviceHandlesError", "GraphicsCapsNotReceived", "GraphicsSubsystemFailed", "DWMProcessAccessFailure")
-| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
-"@ },
-  @{ Name = "AVD-Category-FSLogixProfileStorage"; Description = "Consolidated FSLogix profile and storage attach/detach/access issues."; Kql = @"
-WVDErrors
-| where TimeGenerated > ago(15m)
-| where CodeSymbolic in ("ERROR_SHARING_VIOLATION", "UnloadWaitingForUserAction", "ERROR_ACCESS_DENIED", "ERROR_PATH_NOT_FOUND", "ERROR_FILE_NOT_FOUND", "ERROR_BAD_NETPATH", "ERROR_BAD_NET_NAME", "ERROR_NETNAME_DELETED", "ERROR_DISK_FULL", "ERROR_LOCK_VIOLATION")
-  or Source has "fslogix"
-  or Message has_any ("frxsvc", "frxshell", "temporary profile", "default profile", "profile failed", "vhd attach", "vhdx attach", "container attach", "container detach", "odfc")
-| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
-"@ },
-  @{ Name = "AVD-Category-UnknownUnclassified"; Description = "Consolidated unknown or unclassified AVD error symbols for triage."; Kql = @"
-WVDErrors
-| where TimeGenerated > ago(15m)
-| where CodeSymbolic == "Unknown CodeSymbolic - review Message for details."
-| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
-"@ }
+  @{ Name = "AVD-Category-AuthenticationIdentity"; Description = "Consolidated authentication and identity failures in AVD."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('PasswordMustChange', 'PasswordExpired', 'InvalidAuthToken', 'InvalidCredentials', 'AccountLockedOut', 'AccountDisabled', 'LogonFailed', 'AuthenticationLogonFailed', 'NoAuthenticatingAuthority', 'LocalSecurityAuthorityError')`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId" },
+  @{ Name = "AVD-Category-AuthorizationPolicy"; Description = "Consolidated authorization and logon rights failures in AVD."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ConnectionFailedUserNotAuthorized', 'LogonTypeNotGranted', 'NotAuthorizedForLogon')`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId" },
+  @{ Name = "AVD-Category-ConnectionNetworkGateway"; Description = "Consolidated AVD client, DNS, reverse connect, and gateway transport failures."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('Client', 'DnsLookupFailed', 'GatewayServerNotFound', 'ReverseConnectDnsLookupFailed', 'ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed')`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId" },
+  @{ Name = "AVD-Category-SessionHostHealthCapacity"; Description = "Consolidated session host availability and capacity issues."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ConnectionFailedNoHealthyRdshAvailable', 'SessionHostResourceNotAvailable', 'OutOfMemory')`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId" },
+  @{ Name = "AVD-Category-PersonalDesktopAssignment"; Description = "Consolidated personal desktop assignment and startup failures."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ConnectionFailedPersonalDesktopFailedToBeStarted', 'ConnectionFailedNoPreAssignedPersonalDesktopForUser')`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId" },
+  @{ Name = "AVD-Category-DeviceGraphicsInput"; Description = "Consolidated input and graphics subsystem failures."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('GetInputDeviceHandlesError', 'GraphicsCapsNotReceived', 'GraphicsSubsystemFailed', 'DWMProcessAccessFailure')`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId" },
+  @{ Name = "AVD-Category-FSLogixProfileStorage"; Description = "Consolidated FSLogix profile and storage attach/detach/access issues."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ERROR_SHARING_VIOLATION', 'UnloadWaitingForUserAction', 'ERROR_ACCESS_DENIED', 'ERROR_PATH_NOT_FOUND', 'ERROR_FILE_NOT_FOUND', 'ERROR_BAD_NETPATH', 'ERROR_BAD_NET_NAME', 'ERROR_NETNAME_DELETED', 'ERROR_DISK_FULL', 'ERROR_LOCK_VIOLATION') or Source has 'fslogix' or Message has_any ('frxsvc', 'frxshell', 'temporary profile', 'default profile', 'profile failed', 'vhd attach', 'vhdx attach', 'container attach', 'container detach', 'odfc')`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId" },
+  @{ Name = "AVD-Category-UnknownUnclassified"; Description = "Consolidated unknown or unclassified AVD error symbols for triage."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic == 'Unknown CodeSymbolic - review Message for details.'`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId" }
 )
 
 # Build a definitive per-alert existence map in the main scope before any parallelism.
@@ -625,6 +718,60 @@ $existingCount = ($script:alertExistenceMap.Values | Where-Object { $_ -eq $true
 $newCount = $alertDefinitions.Count - $existingCount
 Write-Log "Verification complete: $existingCount alert(s) already exist, $newCount will be created." "Gray"
 Write-Log "" 
+
+# If detailed webhook mode is enabled, ensure existing alerts also include the configured action groups.
+# This prevents a common drift where alerts created earlier have only the email action group attached.
+if (-not [string]::IsNullOrWhiteSpace($DetailedAgId) -and $existingCount -gt 0) {
+  Write-Log "Ensuring existing alerts include all configured action groups (email + detailed webhook)..." "Cyan"
+  foreach ($alertDef in $alertDefinitions) {
+    if (-not $script:alertExistenceMap[$alertDef.Name]) {
+      continue
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($alertDef.Name, "Ensure action groups on existing scheduled query alert")) {
+      Write-Log "[WhatIf] Would ensure action groups for existing alert: $($alertDef.Name)" "Yellow"
+      continue
+    }
+
+    $currentAgOutput = az monitor scheduled-query show `
+      -g $ResourceGroup `
+      -n $alertDef.Name `
+      --subscription $accountInfo.id `
+      --query "actions.actionGroups[].actionGroupId" -o tsv 2>$null
+
+    $currentActionGroupIds = @()
+    if (-not [string]::IsNullOrWhiteSpace($currentAgOutput)) {
+      $currentActionGroupIds = $currentAgOutput -split "[\r\n]+" |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_.Trim().ToLowerInvariant() }
+    }
+
+    $desiredActionGroupIds = $ActionGroupIds | ForEach-Object { $_.ToLowerInvariant() }
+    $missingActionGroupIds = $desiredActionGroupIds | Where-Object { $currentActionGroupIds -notcontains $_ }
+
+    if ($missingActionGroupIds.Count -eq 0) {
+      Write-Log "Action groups already correct on existing alert: $($alertDef.Name)" "Gray"
+      continue
+    }
+
+    $updateArgs = @(
+      'monitor', 'scheduled-query', 'update',
+      '-g', $ResourceGroup,
+      '-n', $alertDef.Name,
+      '--subscription', $accountInfo.id,
+      '--action-groups'
+    )
+    $updateArgs += $ActionGroupIds
+
+    $updateOutput = az @updateArgs 2>&1
+    if ($LASTEXITCODE -eq 0) {
+      Write-Log "Updated action groups on existing alert: $($alertDef.Name)" "Green"
+    } else {
+      Write-Log "Warning: Failed to update action groups on '$($alertDef.Name)': $updateOutput" "Yellow"
+    }
+  }
+  Write-Log "" 
+}
 
 # Phase 2: Parallel processing for faster execution
 # Note: ForEach-Object -Parallel requires PowerShell 7+
@@ -650,7 +797,7 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
     $WindowSize       = $using:WindowSize
     $Severity         = $using:Severity
     $CreateOnly       = $using:createOnlyLocal
-    $AgId             = $using:AgId
+    $ActionGroupIds   = $using:ActionGroupIds
     $alertExistenceMap = $using:alertExistenceMapLocal
     $isWhatIf         = $using:isWhatIf
     
@@ -702,9 +849,10 @@ WVDErrors
           '--subscription', $accountInfo.id, '--scopes', $LawId,
           '--evaluation-frequency', $EvalFrequency, '--window-size', $WindowSize,
           '--severity', "$Severity", '--description', $alert.Description,
-          '--condition', "count 'Query1' > 0", '--condition-query', "Query1=$queryEscaped",
-          '--action-groups', $AgId
+          '--condition', "count 'Query1' > 0", '--condition-query', "Query1=$queryEscaped"
         )
+        $azCmdArgs += '--action-groups'
+        $azCmdArgs += $ActionGroupIds
         $output = az @azCmdArgs 2>&1
         
         if ($LASTEXITCODE -eq 0) {
@@ -850,6 +998,11 @@ Write-Log ""
 Write-Log "=== Summary ===" "Cyan"
 Write-Log "Action Group: $ActionGroupName" "White"
 Write-Log "Email Recipient: $EmailTo" "White"
+if (-not [string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
+  Write-Log "Detailed Webhook: Enabled ($DetailedActionGroupName)" "White"
+} else {
+  Write-Log "Detailed Webhook: Disabled" "Gray"
+}
 Write-Log "Total Alerts Processed: $($AlertResults.Count)" "White"
 Write-Log "" 
 

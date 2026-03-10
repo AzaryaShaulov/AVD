@@ -1,91 +1,144 @@
 # Azure Virtual Desktop (AVD) Management Scripts
 
-PowerShell automation tools for configuring comprehensive monitoring, diagnostics, and alerting for Azure Virtual Desktop environments.
+PowerShell automation tools for configuring diagnostics, monitoring, and alerting for Azure Virtual Desktop environments.
 
-## Getting Started
+## What This Repository Covers
 
-**Important:** These scripts work together to provide complete AVD monitoring:
+- Enable and standardize AVD diagnostic settings to Log Analytics
+- Deploy consolidated AVD category alerts in Azure Monitor
+- Optionally add detailed email notifications through a Logic App webhook
+- Optionally add Teams notifications through a dedicated Teams notifier flow
 
-1. **First, enable diagnostics** using the AVD-Diagnostics script if diagnostic settings are not already configured on your AVD resources. Diagnostic logs are essential for capturing connection, authentication, and error data.
+## Run Order (First, Second, Optional)
 
-2. **Then, create alerts** using the AVD-Alerts script. The alerts query the diagnostic logs collected by Log Analytics to detect and notify you of critical issues.
+Run these in order for a full setup.
 
-**Note:** If diagnostic settings are already enabled on your AVD resources, you can run the AVD-Alerts script independently to create monitoring alerts.
+1. First: `AVD-Diagnostics/AVD-EnableDiagnosticLogs.ps1`
+2. Second: `AVD-Alerts/Azure-AVD-Alerts.ps1`
+3. Optional: `AVD-Alerts/Deploy-AVD-AlertWebhook-LogicApp.ps1`
+4. Optional: `AVD-Alerts/Deploy-AVD-Teams-Notifier.ps1`
+5. Optional validation: `AVD-Alerts/Send-AVD-Webhook-TestAlert.ps1`
 
-## Scripts Overview
+## Script Flow Diagram (Plain Text)
 
-### 📊 [AVD-Diagnostics](./AVD-Diagnostics/)
-**Run this first if diagnostics are not yet enabled.**
+```text
+[First] AVD-Diagnostics/AVD-EnableDiagnosticLogs.ps1
+    |
+    |  Enables diagnostic settings on AVD resources
+    |  and sends logs to Log Analytics
+    v
+[Second] AVD-Alerts/Azure-AVD-Alerts.ps1
+    |
+    |  Creates/maintains AVD-Category-* alerts
+    |  and primary email action group (AVD-Alerts)
+    v
+[Optional] Deploy-AVD-AlertWebhook-LogicApp.ps1
+    |
+    |-- Deploys la-avd-alerts-detailed
+    |-- Ensures AVD-Alerts-Detailed webhook action group
+    |-- Optional: auto-wires existing alerts
+    v
+[Optional] Deploy-AVD-Teams-Notifier.ps1
+    |
+    |-- Deploys la-avd-alerts-teams
+    |-- Ensures AVD-Alerts-Teams action group
+    |-- Optional: attaches Teams AG to existing alerts
+    v
+[Optional] Send-AVD-Webhook-TestAlert.ps1
+       Sends synthetic test payload to validate webhook path
+```
 
-Automatically discovers and configures diagnostic settings for all AVD resources (Host Pools, Application Groups, Workspaces) to send logs and metrics to a Log Analytics workspace. Enables all available log categories individually for comprehensive logging coverage across your entire AVD environment.
+## Critical Prerequisites
 
-### 🔔 [AVD-Alerts](./AVD-Alerts/)
-**Depends on diagnostic logs being enabled (by AVD-Diagnostics or manually configured).**
+- Azure CLI installed and authenticated (`az login`)
+- Required Azure RBAC on target resource groups
+- PowerShell 7 (`pwsh`) recommended for best compatibility and parallel processing
 
-Creates 20 pre-configured Azure Monitor scheduled query alerts that monitor critical AVD connection, authentication, and resource issues with 5-minute evaluation frequency. Features parallel processing (PowerShell 7+) for fast execution, proper WhatIf support for safe testing, and multi-subscription targeting. Sends email notifications through Azure Monitor Action Groups when problems are detected, enabling rapid incident response.
+### Important: Diagnostics Must Be Enabled First
 
-**Version 2.1** - Critical bug fixes for WhatIf functionality and improved performance with 77% speed improvement through parallel processing.
+Run `AVD-Diagnostics/AVD-EnableDiagnosticLogs.ps1` before deploying alerts unless diagnostics are already enabled on AVD resources.
 
-## Why Enable Diagnostics and Alerts?
+Without diagnostic logs in Log Analytics, alert queries do not have data to evaluate.
 
-**Diagnostic settings are not enabled by default** on AVD resources, leaving critical operational data uncollected. Enabling diagnostics captures essential telemetry about user connections, authentication failures, session host health, and performance metrics—data that's **required for effective troubleshooting and proactive monitoring**. Without diagnostic logs, identifying the root cause of user connection failures, performance degradation, or resource availability issues becomes extremely difficult or impossible.
+### Important: `LawName` (Log Analytics Workspace) Guidance
 
-**Azure Monitor alerts provide real-time notifications** when critical issues occur, such as failed authentications, no healthy session hosts available, or out-of-memory conditions. Early detection enables IT teams to resolve problems before they impact a large number of users, reducing downtime and maintaining service quality. Combined with diagnostic logs, alerts transform AVD from a reactive "fix-it-when-it-breaks" model to a proactive monitoring and incident response system.
+For `AVD-Alerts/Azure-AVD-Alerts.ps1`, `-LawName` is the Log Analytics workspace name used by alert queries.
 
-These scripts **support and enable the Azure Virtual Desktop | Insights workbook**, Microsoft's official monitoring solution for AVD. The Insights workbook requires diagnostic settings to be configured on all AVD resources to populate its dashboards with connection diagnostics, performance data, user session analytics, and capacity planning metrics.
+If there is already an existing AVD Log Analytics workspace (including Nerdio-managed environments), reuse it.
 
-## Prerequisites
+- Set `-ResourceGroup` to the workspace resource group
+- Set `-LawName` to that existing workspace name
 
-- **Azure CLI** 2.50.0 or later ([Installation Guide](https://learn.microsoft.com/cli/azure/install-azure-cli))
-- **PowerShell** 5.1 or later
-- **Azure Permissions:**
-  - Monitoring Contributor role (for diagnostics and alerts)
-  - Reader role on AVD resources
-- **Log Analytics Workspace** (existing or create new)
+Do not create a new workspace unless needed.
 
 ## Quick Start
 
-### 1. Enable Diagnostic Settings (if not already enabled)
-**Run this first if your AVD resources don't have diagnostic settings configured.**
+### 1) Enable AVD diagnostics first
 
 ```powershell
 cd AVD-Diagnostics
-.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID" -WorkspaceName "YOUR-LAW-NAME"
+pwsh -NoProfile -File .\AVD-EnableDiagnosticLogs.ps1 `
+  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+  -WorkspaceName "YOUR-LAW-NAME"
 ```
 
-### 2. Create AVD Alerts (requires diagnostic logs)
-**This script queries logs collected by diagnostic settings configured in step 1.**
+### 2) Deploy baseline AVD alerts
 
 ```powershell
-cd AVD-Alerts
-.\Azure-AVD-Alerts.ps1 -EmailTo "admin@contoso.com" -ResourceGroup "YOUR-RG" -LawName "YOUR-LAW-NAME" -Location "eastus2"
+cd ..\AVD-Alerts
+pwsh -NoProfile -File .\Azure-AVD-Alerts.ps1 `
+  -EmailTo "admin@contoso.com" `
+  -ResourceGroup "YOUR-RG" `
+  -LawName "YOUR-LAW-NAME" `
+  -Location "eastus2"
 ```
 
-**Note:** If diagnostic settings are already configured on your AVD resources, you can skip step 1 and run step 2 directly.
+### 3) Optional: Add detailed webhook email notifications
+
+```powershell
+pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
+  -ResourceGroup "YOUR-RG" `
+  -Location "eastus2" `
+  -SendFromEmail "alerts@contoso.com" `
+  -SendToEmail "avd-oncall@contoso.com"
+```
+
+### 4) Optional: Add Teams notifications
+
+```powershell
+pwsh -NoProfile -File .\Deploy-AVD-Teams-Notifier.ps1 `
+  -ResourceGroup "YOUR-RG" `
+  -Location "eastus2" `
+  -TeamsWebhookUrl "https://outlook.office.com/webhook/..."
+```
+
+## Current Alert Model
+
+The alerts script now deploys consolidated `AVD-Category-*` alerts with:
+
+- Evaluation frequency: every 10 minutes
+- Lookback window: 15 minutes
+- Action groups: email baseline plus optional detailed webhook and Teams
+
+See `AVD-Alerts/README.md` for full script details, RBAC, category breakdown, and examples.
 
 ## Documentation
 
-Each script includes comprehensive documentation:
-- [AVD-Diagnostics README](./AVD-Diagnostics/README.md) - Diagnostic settings configuration details
-- [AVD-Alerts README](./AVD-Alerts/README.md) - Alert configuration and complete alert reference (v2.1)
+- `AVD-Diagnostics/README.md`
+- `AVD-Alerts/README.md`
 
 ## Related Resources
 
-- [Azure Virtual Desktop Documentation](https://learn.microsoft.com/azure/virtual-desktop/)
-- [Monitor AVD with Azure Monitor](https://learn.microsoft.com/azure/virtual-desktop/monitor-azure-virtual-desktop)
-- [AVD Insights Workbook](https://learn.microsoft.com/azure/virtual-desktop/insights)
-- [AVD Diagnostics with Log Analytics](https://learn.microsoft.com/azure/virtual-desktop/diagnostics-log-analytics)
+- Azure Virtual Desktop documentation: https://learn.microsoft.com/azure/virtual-desktop/
+- Monitor AVD with Azure Monitor: https://learn.microsoft.com/azure/virtual-desktop/monitor-azure-virtual-desktop
+- AVD Insights workbook: https://learn.microsoft.com/azure/virtual-desktop/insights
 
 ## License
 
-See [LICENSE](./LICENSE) file for details.
+See `LICENSE` for details.
 
 ## Disclaimer
 
-**THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.**
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
 
-This collection of scripts is provided as-is under the MIT License. The authors and contributors make no warranties or guarantees about functionality, reliability, or suitability. Always test in non-production environments before deploying to production systems. See individual script READMEs for detailed disclaimers and warnings.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
+These scripts are provided as-is under the MIT License. Always validate in a non-production environment before production rollout.
