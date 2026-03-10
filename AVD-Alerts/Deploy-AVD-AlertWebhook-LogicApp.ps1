@@ -207,6 +207,15 @@ function Write-Log {
   Write-Host "[$ts] $Message" -ForegroundColor $Color
 }
 
+function Get-TempDirectory {
+  # Cross-platform temp path resolution.
+  $tmp = [System.IO.Path]::GetTempPath()
+  if ([string]::IsNullOrWhiteSpace($tmp)) {
+    throw "Could not resolve a temporary directory path."
+  }
+  return $tmp
+}
+
 Write-Log "Starting Logic App webhook deployment..." "Cyan"
 
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
@@ -320,7 +329,7 @@ if ($EmailProvider -eq 'SendGrid') {
         }
       }
 
-      $connTmpFile = Join-Path $env:TEMP ("office365-connection-{0}.json" -f [guid]::NewGuid().ToString('N'))
+      $connTmpFile = Join-Path (Get-TempDirectory) ("office365-connection-{0}.json" -f [guid]::NewGuid().ToString('N'))
       try {
         $connBody | ConvertTo-Json -Depth 10 | Set-Content -Path $connTmpFile -Encoding utf8
         $connUri = "${Office365ConnectionResourceId}?api-version=2016-06-01"
@@ -411,7 +420,7 @@ $body = @{
   properties = $workflowProperties
 }
 
-$tmpFile = Join-Path $env:TEMP ("logicapp-{0}-{1}.json" -f $LogicAppName, [guid]::NewGuid().ToString('N'))
+$tmpFile = Join-Path (Get-TempDirectory) ("logicapp-{0}-{1}.json" -f $LogicAppName, [guid]::NewGuid().ToString('N'))
 $body | ConvertTo-Json -Depth 30 | Set-Content -Path $tmpFile -Encoding utf8
 
 $workflowResourceId = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Logic/workflows/$LogicAppName"
