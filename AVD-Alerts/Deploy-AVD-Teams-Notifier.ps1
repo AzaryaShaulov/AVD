@@ -146,18 +146,7 @@ $workflowDefinition = @{
           'Content-Type' = 'application/json'
         }
         body = @{
-          '@type' = 'MessageCard'
-          '@context' = 'http://schema.org/extensions'
-          summary = "@{concat('AVD Alert - ', coalesce(triggerBody()?['data']?['essentials']?['alertRule'], 'Unknown Rule'))}"
-          themeColor = '0078D7'
-          title = "@{concat('[AVD Alert] ', coalesce(triggerBody()?['data']?['essentials']?['alertRule'], 'Unknown Rule'))}"
-          text = "@{concat('<b>Severity:</b> ', string(triggerBody()?['data']?['essentials']?['severity']), '<br/><b>Condition:</b> ', coalesce(triggerBody()?['data']?['essentials']?['monitorCondition'], 'N/A'), '<br/><b>Fired:</b> ', coalesce(triggerBody()?['data']?['essentials']?['firedDateTime'], 'N/A'))}"
-          sections = @(
-            @{
-              activityTitle = 'Alert Context'
-              text = "@{string(triggerBody()?['data']?['alertContext'])}"
-            }
-          )
+          text = "@{concat('[AVD Alert] ', coalesce(triggerBody()?['data']?['essentials']?['alertRule'], 'Unknown Rule'), ' | Severity: ', string(triggerBody()?['data']?['essentials']?['severity']), ' | Condition: ', coalesce(triggerBody()?['data']?['essentials']?['monitorCondition'], 'N/A'), ' | Fired: ', coalesce(triggerBody()?['data']?['essentials']?['firedDateTime'], 'N/A'), '\n\nAlert Context:\n', string(triggerBody()?['data']?['alertContext']))}"
         }
       }
       runAfter = @{}
@@ -220,6 +209,15 @@ if ($PSBoundParameters.ContainsKey('WhatIf')) {
   Write-Log "Callback URL resolved." "Green"
 }
 
+function ConvertTo-AzCliSafeUri {
+  param([Parameter(Mandatory = $true)][string]$Uri)
+
+  # az on Windows is typically az.cmd, so cmd.exe parsing can break signed URLs.
+  return ($Uri -replace '%', '%%' -replace '&', '^&')
+}
+
+$callbackUrlForAzCli = ConvertTo-AzCliSafeUri -Uri $callbackUrl
+
 if (-not $SkipTestInvoke -and -not $PSBoundParameters.ContainsKey('WhatIf')) {
   Write-Log "Sending sample test payload to Teams notifier..." "Cyan"
   $testPayload = @{
@@ -253,15 +251,12 @@ if ($PSCmdlet.ShouldProcess($TeamsActionGroupName, "Create/update Teams action g
 
   if (-not $agExists) {
     Write-Log "Creating Teams action group '$TeamsActionGroupName'..." "Yellow"
-    $createArgs = @(
-      'monitor', 'action-group', 'create',
-      '-g', $ResourceGroup, '-n', $TeamsActionGroupName,
-      '--subscription', $subscriptionId,
-      '--short-name', 'AVDTeams',
-      '--action', 'webhook', $TeamsWebhookReceiverName, ('"' + $callbackUrl + '"'),
-      'usecommonalertschema'
-    )
-    $agCreateOutput = az @createArgs 2>&1
+    # Keep the full signed callback URL (including '&sp', '&sv', '&sig' query params) as one argument.
+    $agCreateOutput = az monitor action-group create `
+      -g $ResourceGroup -n $TeamsActionGroupName `
+      --subscription $subscriptionId `
+      --short-name AVDTeams `
+      --action webhook $TeamsWebhookReceiverName "$callbackUrlForAzCli" usecommonalertschema 2>&1
     if ($LASTEXITCODE -ne 0) {
       throw "Failed creating Teams action group: $agCreateOutput"
     }
@@ -273,14 +268,10 @@ if ($PSCmdlet.ShouldProcess($TeamsActionGroupName, "Create/update Teams action g
     $existingReceiver = $webhookReceivers | Where-Object { $_.name -eq $TeamsWebhookReceiverName -and $_.serviceUri -eq $callbackUrl } | Select-Object -First 1
     if ($null -eq $existingReceiver) {
       az monitor action-group update -g $ResourceGroup -n $TeamsActionGroupName --subscription $subscriptionId --remove-action $TeamsWebhookReceiverName 2>$null | Out-Null
-      $updateArgs = @(
-        'monitor', 'action-group', 'update',
-        '-g', $ResourceGroup, '-n', $TeamsActionGroupName,
-        '--subscription', $subscriptionId,
-        '--add-action', 'webhook', $TeamsWebhookReceiverName, ('"' + $callbackUrl + '"'),
-        'usecommonalertschema'
-      )
-      $agUpdateOutput = az @updateArgs 2>&1
+      $agUpdateOutput = az monitor action-group update `
+        -g $ResourceGroup -n $TeamsActionGroupName `
+        --subscription $subscriptionId `
+        --add-action webhook $TeamsWebhookReceiverName "$callbackUrlForAzCli" usecommonalertschema 2>&1
       if ($LASTEXITCODE -ne 0) {
         throw "Failed updating Teams action group receiver: $agUpdateOutput"
       }

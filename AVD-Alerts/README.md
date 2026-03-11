@@ -10,7 +10,7 @@ The **AVD Alerts Scripts Guide** is best used as a complementary tool alongside 
 Creates and maintains the core `AVD-Category-*` scheduled query alerts, plus the primary email action group (`AVD-Alerts`).
 
 2. `Deploy-AVD-AlertWebhook-LogicApp.ps1`
-Deploys a detailed-notification Logic App (`la-avd-alerts-detailed`) and creates/updates the detailed webhook action group (`AVD-Alerts-Detailed`). Supports `Office365` (default) or `SendGrid` delivery.
+Deploys a detailed-notification Logic App (`la-avd-alerts-detailed`) and creates/updates the detailed webhook action group (`AVD-Alerts-Detailed`). Supports `Office365` (default) or `SendGrid` delivery. In `Office365` mode, the script now prints an explicit authorization reminder and checks connector status so you can confirm whether email delivery is ready.
 
 3. `Deploy-AVD-Teams-Notifier.ps1`
 Deploys a Teams notifier Logic App (`la-avd-alerts-teams`), creates/updates `AVD-Alerts-Teams`, and can attach Teams notifications to existing `AVD-Category-*` alerts.
@@ -72,6 +72,7 @@ Send-AVD-Webhook-TestAlert.ps1
 ## Prerequisites
 
 - Azure CLI installed and authenticated (`az login`)
+-  set the subscription ('az account set --subscription "your-subscription-id" ')
 - `scheduled-query` CLI extension available
 - Monitoring permissions in target resource group
 - A Log Analytics workspace receiving AVD diagnostics
@@ -101,6 +102,7 @@ Use the target resource group scope unless noted otherwise.
 Notes:
 - If `Deploy-AVD-AlertWebhook-LogicApp.ps1` is run with `-ConfigureAlertsAfterDeploy`, it also performs core alert deployment steps and therefore needs permissions required by `Azure-AVD-Alerts.ps1`.
 - Office365 mode requires connector authorization in addition to Azure RBAC (the account authorizing the connection must be allowed to use that mailbox).
+- The webhook deploy script now reports Office365 connection readiness after deployment and prints an action-required message when authorization is still needed.
 - Treat all secret-bearing values as credentials: `SendGridApiKey`, Teams webhook URLs, and Logic App callback URLs.
 
 ### What Each Script Changes
@@ -108,7 +110,7 @@ Notes:
 | Script | Azure Services/Resources Changed | External API/Service Calls | Local Files Changed |
 |---|---|---|---|
 | `Azure-AVD-Alerts.ps1` | Creates/updates Azure Monitor action groups (`AVD-Alerts`, optional `AVD-Alerts-Detailed`), creates/updates `AVD-Category-*` scheduled query alert rules in `Microsoft.Insights/scheduledQueryRules`. | None beyond Azure control-plane APIs. | Writes CSV report (default `avd-alerts-report.csv` or subscription-suffixed variant). |
-| `Deploy-AVD-AlertWebhook-LogicApp.ps1` | Creates/updates Logic App workflow `la-avd-alerts-detailed`, may create/update `Microsoft.Web/connections` (Office365), creates/updates detailed action group receiver, can optionally call core alert deployment to attach webhook action group. | Logic App runtime sends outbound email through SendGrid API or Office365 connector API, based on selected provider. | Creates temporary deployment JSON in `%TEMP%` during execution (cleaned up by script). |
+| `Deploy-AVD-AlertWebhook-LogicApp.ps1` | Creates/updates Logic App workflow `la-avd-alerts-detailed`, may create/update `Microsoft.Web/connections` (Office365), creates/updates detailed action group receiver, can optionally call core alert deployment to attach webhook action group. | Logic App runtime sends outbound email through SendGrid API or Office365 connector API, based on selected provider. | Creates temporary deployment JSON in the OS temp directory during execution (cross-platform temp path resolution; cleaned up by script). |
 | `Deploy-AVD-Teams-Notifier.ps1` | Creates/updates Logic App workflow `la-avd-alerts-teams`, creates/updates `AVD-Alerts-Teams` action group, optionally patches existing `AVD-Category-*` alerts to add Teams action group. | Logic App runtime posts outbound messages to Teams incoming webhook endpoint. | Creates temporary deployment JSON in `%TEMP%` during execution (cleaned up by script). |
 | `Send-AVD-Webhook-TestAlert.ps1` | No persistent Azure resource changes; resolves Logic App callback URL and posts a synthetic test payload to validate flow execution. | Sends HTTP POST to Logic App callback endpoint (authorized by callback URL secret). | No persistent local file changes. |
 
@@ -147,6 +149,11 @@ pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
 	-SendToEmail "avd-oncall@contoso.com"
 ```
 
+Office365 note:
+
+- After deployment, the script prints the Office365 connector status.
+- If connector authorization is missing, it prints an action-required message instructing you to authorize the Office365 connection in Azure Portal before emails can be delivered.
+
 SendGrid mode:
 
 ```powershell
@@ -159,7 +166,13 @@ pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
 	-SendToEmail "avd-oncall@contoso.com"
 ```
 
-Auto-configure core alerts right after deploy:
+Single-command behavior *AVD-Alerts* + *Deploy-AVD-AlertWebook-LogicApp*:
+
+- You do not need to run a separate Office365 deploy command and a separate core-alerts command.
+- `Office365` is the default provider in `Deploy-AVD-AlertWebhook-LogicApp.ps1`.
+- If you include `-ConfigureAlertsAfterDeploy`, the same command **deploys/updates the Logic App and then invokes `Azure-AVD-Alerts.ps1`** automatically with the generated webhook URL.
+
+One command: deploy detailed notifier + auto-configure core alerts:
 
 ```powershell
 pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `

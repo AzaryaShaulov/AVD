@@ -260,7 +260,9 @@ if ($rgExists -ne 'true') {
   }
 }
 
-$alertEmailHtmlExpr = "@{concat('<h2>Azure Monitor AVD Alert</h2>', '<p><b>Rule:</b> ', coalesce(triggerBody()?['data']?['essentials']?['alertRule'], 'N/A'), '</p>', '<p><b>Severity:</b> ', string(triggerBody()?['data']?['essentials']?['severity']), '</p>', '<p><b>Condition:</b> ', coalesce(triggerBody()?['data']?['essentials']?['monitorCondition'], 'N/A'), '</p>', '<p><b>Fired At:</b> ', coalesce(triggerBody()?['data']?['essentials']?['firedDateTime'], 'N/A'), '</p>', '<hr/>', '<p><b>Query/Search Results (if present):</b></p><pre>', string(triggerBody()?['data']?['alertContext']?['SearchResults']), '</pre>', '<hr/>', '<p><b>Alert Context:</b></p><pre>', string(triggerBody()?['data']?['alertContext']), '</pre>')}"
+$alertEmailHtmlExpr = @'
+@{concat('<h2>Azure Monitor AVD Alert</h2>', '<p><b>Rule:</b> ', coalesce(triggerBody()?['data']?['essentials']?['alertRule'], 'N/A'), '</p>', '<p><b>Severity:</b> ', string(triggerBody()?['data']?['essentials']?['severity']), '</p>', '<p><b>Condition:</b> ', coalesce(triggerBody()?['data']?['essentials']?['monitorCondition'], 'N/A'), '</p>', '<p><b>Fired At:</b> ', coalesce(triggerBody()?['data']?['essentials']?['firedDateTime'], 'N/A'), '</p>', '<hr/>', '<p><b>Alert Evaluation:</b></p>', '<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;">', '<tbody>', '<tr><td><b>Window Start</b></td><td>', coalesce(triggerBody()?['data']?['alertContext']?['condition']?['windowStartTime'], triggerBody()?['data']?['alertContext']?['windowStartTime'], 'N/A'), '</td></tr>', '<tr><td><b>Window End</b></td><td>', coalesce(triggerBody()?['data']?['alertContext']?['condition']?['windowEndTime'], triggerBody()?['data']?['alertContext']?['windowEndTime'], 'N/A'), '</td></tr>', '<tr><td><b>Operator</b></td><td>', coalesce(triggerBody()?['data']?['alertContext']?['condition']?['allOf'][0]?['operator'], 'N/A'), '</td></tr>', '<tr><td><b>Threshold</b></td><td>', string(coalesce(triggerBody()?['data']?['alertContext']?['condition']?['allOf'][0]?['threshold'], 'N/A')), '</td></tr>', '<tr><td><b>Metric Value</b></td><td>', string(coalesce(triggerBody()?['data']?['alertContext']?['condition']?['allOf'][0]?['metricValue'], 'N/A')), '</td></tr>', '<tr><td><b>Aggregation</b></td><td>', coalesce(triggerBody()?['data']?['alertContext']?['condition']?['allOf'][0]?['timeAggregation'], 'N/A'), '</td></tr>', '</tbody></table>', '<p><b>Search Query</b></p><pre style="white-space:pre-wrap;">', string(coalesce(triggerBody()?['data']?['alertContext']?['condition']?['allOf'][0]?['searchQuery'], 'N/A')), '</pre>', if(equals(coalesce(triggerBody()?['data']?['alertContext']?['condition']?['allOf'][0]?['linkToSearchResultsUI'], ''), ''), '', concat('<p><a href="', triggerBody()?['data']?['alertContext']?['condition']?['allOf'][0]?['linkToSearchResultsUI'], '">Open Search Results in Azure Portal</a></p>')), '<hr/>', '<p><b>Query/Search Results Rows (if provided):</b></p>', if(greater(length(coalesce(triggerBody()?['data']?['alertContext']?['SearchResults']?['tables'], json('[]'))), 0), concat('<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;">', '<thead><tr style="background-color:#f3f2f1;"><th>Rows</th></tr></thead><tbody><tr><td><pre style="margin:0;white-space:pre-wrap;">', string(coalesce(triggerBody()?['data']?['alertContext']?['SearchResults']?['tables'], json('[]'))), '</pre></td></tr></tbody></table>'), '<p>No row-level SearchResults were included in this alert payload.</p>'))}
+'@
 
 $workflowParametersDefinition = @{
   sendFromEmail = @{ type = 'String' }
@@ -455,6 +457,46 @@ if ($PSBoundParameters.ContainsKey('WhatIf')) {
   Write-Log "Callback URL resolved." "Green"
 }
 
+function Set-DetailedActionGroupWebhook {
+  param(
+    [Parameter(Mandatory = $true)][string]$SubscriptionId,
+    [Parameter(Mandatory = $true)][string]$ResourceGroup,
+    [Parameter(Mandatory = $true)][string]$ActionGroupName,
+    [Parameter(Mandatory = $true)][string]$ReceiverName,
+    [Parameter(Mandatory = $true)][string]$ServiceUri
+  )
+
+  $agResourceId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/microsoft.insights/actionGroups/$ActionGroupName"
+  $agUri = "${agResourceId}?api-version=2023-01-01"
+  $agBody = @{
+    location = 'Global'
+    properties = @{
+      groupShortName = 'AVDDetl'
+      enabled = $true
+      webhookReceivers = @(
+        @{
+          name = $ReceiverName
+          serviceUri = $ServiceUri
+          useCommonAlertSchema = $true
+        }
+      )
+    }
+  }
+
+  $agTmpFile = Join-Path (Get-TempDirectory) ("actiongroup-{0}-{1}.json" -f $ActionGroupName, [guid]::NewGuid().ToString('N'))
+  try {
+    $agBody | ConvertTo-Json -Depth 15 | Set-Content -Path $agTmpFile -Encoding utf8
+    $agOutput = az rest --method put --uri $agUri --body "@$agTmpFile" -o json 2>&1
+    if ($LASTEXITCODE -ne 0) {
+      throw "$agOutput"
+    }
+    return $agOutput
+  }
+  finally {
+    Remove-Item -Path $agTmpFile -ErrorAction SilentlyContinue
+  }
+}
+
 if (-not $SkipTestInvoke -and -not $PSBoundParameters.ContainsKey('WhatIf')) {
   Write-Log "Sending test payload to callback URL..." "Cyan"
   $testPayload = @{
@@ -501,6 +543,26 @@ Write-Log "Callback URL: $callbackUrl" "Green"
 Write-Log "" 
 Write-Log "Use this webhook URL with Azure-AVD-Alerts.ps1 parameter: -DetailedResultsWebhookUrl" "Gray"
 
+if ($EmailProvider -eq 'Office365') {
+  Write-Log "Office365 mode selected. Email delivery requires an authenticated Office 365 API connection." "Yellow"
+  $connStatusJson = az resource show --ids $Office365ConnectionResourceId --query "properties.statuses" -o json 2>$null
+  if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($connStatusJson)) {
+    try {
+      $connStatuses = $connStatusJson | ConvertFrom-Json
+      $hasUnauthenticatedState = @($connStatuses | Where-Object { $_.status -eq 'Error' -or $_.error.code -eq 'Unauthenticated' }).Count -gt 0
+      if ($hasUnauthenticatedState) {
+        Write-Log "Action required: Authorize Office 365 connection '$Office365ConnectionName' in Azure Portal before emails can be delivered." "Yellow"
+      } else {
+        Write-Log "Office 365 connection status appears authenticated." "Green"
+      }
+    } catch {
+      Write-Log "Could not parse Office 365 connection status. Verify authorization in Azure Portal if email delivery fails." "Yellow"
+    }
+  } else {
+    Write-Log "Could not read Office 365 connection status. Verify authorization in Azure Portal before relying on email delivery." "Yellow"
+  }
+}
+
 # Always normalize the detailed action group receiver so webhook naming stays consistent
 # even when ConfigureAlertsAfterDeploy is not used.
 if ($PSCmdlet.ShouldProcess($DetailedActionGroupName, "Ensure standardized detailed webhook receiver")) {
@@ -509,17 +571,15 @@ if ($PSCmdlet.ShouldProcess($DetailedActionGroupName, "Ensure standardized detai
 
   if (-not $detailedAgExists) {
     Write-Log "Detailed action group '$DetailedActionGroupName' not found - creating..." "Yellow"
-    $createArgs = @(
-      'monitor', 'action-group', 'create',
-      '-g', $ResourceGroup, '-n', $DetailedActionGroupName,
-      '--subscription', $subscriptionId,
-      '--short-name', 'AVDDetl',
-      '--action', 'webhook', $DetailedWebhookReceiverName, ('"' + $callbackUrl + '"'),
-      'usecommonalertschema'
-    )
-    $createOutput = az @createArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
-      throw "Failed to create detailed action group '$DetailedActionGroupName': $createOutput"
+    try {
+      Set-DetailedActionGroupWebhook `
+        -SubscriptionId $subscriptionId `
+        -ResourceGroup $ResourceGroup `
+        -ActionGroupName $DetailedActionGroupName `
+        -ReceiverName $DetailedWebhookReceiverName `
+        -ServiceUri $callbackUrl | Out-Null
+    } catch {
+      throw "Failed to create detailed action group '$DetailedActionGroupName': $($_.Exception.Message)"
     }
     Write-Log "Detailed action group '$DetailedActionGroupName' created." "Green"
   } else {
@@ -540,16 +600,15 @@ if ($PSCmdlet.ShouldProcess($DetailedActionGroupName, "Ensure standardized detai
     if ($null -eq $receiverWithUrl) {
       Write-Log "Ensuring receiver '$DetailedWebhookReceiverName' points to current callback URL..." "Cyan"
       az monitor action-group update -g $ResourceGroup -n $DetailedActionGroupName --subscription $subscriptionId --remove-action $DetailedWebhookReceiverName 2>$null | Out-Null
-      $updateArgs = @(
-        'monitor', 'action-group', 'update',
-        '-g', $ResourceGroup, '-n', $DetailedActionGroupName,
-        '--subscription', $subscriptionId,
-        '--add-action', 'webhook', $DetailedWebhookReceiverName, ('"' + $callbackUrl + '"'),
-        'usecommonalertschema'
-      )
-      $updateOutput = az @updateArgs 2>&1
-      if ($LASTEXITCODE -ne 0) {
-        throw "Failed to update detailed action group receiver: $updateOutput"
+      try {
+        Set-DetailedActionGroupWebhook `
+          -SubscriptionId $subscriptionId `
+          -ResourceGroup $ResourceGroup `
+          -ActionGroupName $DetailedActionGroupName `
+          -ReceiverName $DetailedWebhookReceiverName `
+          -ServiceUri $callbackUrl | Out-Null
+      } catch {
+        throw "Failed to update detailed action group receiver: $($_.Exception.Message)"
       }
       Write-Log "Detailed action group receiver ensured." "Green"
     } else {

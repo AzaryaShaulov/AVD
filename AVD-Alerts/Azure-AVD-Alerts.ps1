@@ -330,7 +330,7 @@ try {
   $_listJobRg    = $ResourceGroup
   $_listJobSubId = $accountInfo.id
   $listJob = Start-Job -ScriptBlock {
-    az monitor scheduled-query list -g $using:_listJobRg --subscription $using:_listJobSubId --query "[?starts_with(name, 'AVD-')].name" -o tsv 2>$null
+    az monitor scheduled-query list -g ${using:_listJobRg} --subscription ${using:_listJobSubId} --query "[?starts_with(name, 'AVD-')].name" -o tsv 2>$null
   }
 
   $completed = Wait-Job $listJob -Timeout 25
@@ -782,35 +782,30 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
   $throttleLimit = 5  # Process 5 alerts simultaneously
   $isWhatIf = $PSBoundParameters.ContainsKey('WhatIf')
   $createOnlyLocal = $CreateOnly
-  # Capture the pre-verified existence map into a regular variable for $using: scope
+  # Capture the pre-verified existence map into a regular variable for parallel scope
   $alertExistenceMapLocal = $script:alertExistenceMap
 
   $results = $alertDefinitions | ForEach-Object -ThrottleLimit $throttleLimit -Parallel {
     $alert = $_
 
-    # Import shared variables using $using: scope
-    $ResourceGroup    = $using:ResourceGroup
-    $Location         = $using:Location
-    $accountInfo      = $using:accountInfo
-    $LawId            = $using:LawId
-    $EvalFrequency    = $using:EvalFrequency
-    $WindowSize       = $using:WindowSize
-    $Severity         = $using:Severity
-    $CreateOnly       = $using:createOnlyLocal
-    $ActionGroupIds   = $using:ActionGroupIds
-    $alertExistenceMap = $using:alertExistenceMapLocal
-    $isWhatIf         = $using:isWhatIf
+    # Import shared variables from caller scope
+    $ResourceGroup    = ${using:ResourceGroup}
+    $Location         = ${using:Location}
+    $accountInfo      = ${using:accountInfo}
+    $LawId            = ${using:LawId}
+    $EvalFrequency    = ${using:EvalFrequency}
+    $WindowSize       = ${using:WindowSize}
+    $Severity         = ${using:Severity}
+    $CreateOnly       = ${using:createOnlyLocal}
+    $ActionGroupIds   = ${using:ActionGroupIds}
+    $alertExistenceMap = ${using:alertExistenceMapLocal}
+    $isWhatIf         = ${using:isWhatIf}
     
     # Build KQL query (custom per alert or default CodeSymbolic-based)
     if ($alert.ContainsKey('Kql')) {
       $kql = $alert.Kql
     } else {
-      $kql = @"
-WVDErrors
-| where TimeGenerated > ago(15m)
-| where CodeSymbolic == '$($alert.CodeSymbolic)'
-| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
-"@
+      $kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic == '$($alert.CodeSymbolic)'`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId"
     }
     
     # Check if alert exists using the pre-verified existence map
