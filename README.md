@@ -1,5 +1,7 @@
 # Azure Virtual Desktop (AVD) Management Scripts
 
+**Last Updated:** March 2026
+
 PowerShell automation tools for configuring diagnostics, monitoring, and alerting for Azure Virtual Desktop environments.
 
 ## What This Repository Covers
@@ -7,7 +9,6 @@ PowerShell automation tools for configuring diagnostics, monitoring, and alertin
 - Enable and standardize AVD diagnostic settings to Log Analytics
 - Deploy consolidated AVD category alerts in Azure Monitor
 - Optionally add detailed email notifications through a Logic App webhook
-- Optionally add Teams notifications through a dedicated Teams notifier flow
 
 ## Run Order (First, Second, Optional)
 
@@ -15,37 +16,59 @@ Run these in order for a full setup.
 
 1. First: `AVD-Diagnostics/AVD-EnableDiagnosticLogs.ps1`
 2. Second: `AVD-Alerts/Azure-AVD-Alerts.ps1`
-3. Optional: `AVD-Alerts/Deploy-AVD-AlertWebhook-LogicApp.ps1`
-4. Optional: `AVD-Alerts/Deploy-AVD-Teams-Notifier.ps1`
-5. Optional validation: `AVD-Alerts/Send-AVD-Webhook-TestAlert.ps1`
+3. Optional: `AVD-Alerts/Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`
+4. Optional validation: `AVD-Alerts/Send-AVD-Webhook-TestAlert.ps1`
 
-## Script Flow Diagram (Plain Text)
+## Script Flow Diagram
 
-```text
-[First] AVD-Diagnostics/AVD-EnableDiagnosticLogs.ps1
-    |
-    |  Enables diagnostic settings on AVD resources
-    |  and sends logs to Log Analytics
-    v
-[Second] AVD-Alerts/Azure-AVD-Alerts.ps1
-    |
-    |  Creates/maintains AVD-Category-* alerts
-    |  and primary email action group (AVD-Alerts)
-    v
-[Optional] Deploy-AVD-AlertWebhook-LogicApp.ps1
-    |
-    |-- Deploys la-avd-alerts-detailed
-    |-- Ensures AVD-Alerts-Detailed webhook action group
-    |-- Optional: auto-wires existing alerts
-    v
-[Optional] Deploy-AVD-Teams-Notifier.ps1
-    |
-    |-- Deploys la-avd-alerts-teams
-    |-- Ensures AVD-Alerts-Teams action group
-    |-- Optional: attaches Teams AG to existing alerts
-    v
-[Optional] Send-AVD-Webhook-TestAlert.ps1
-       Sends synthetic test payload to validate webhook path
+```mermaid
+flowchart TD
+    A[AVD-EnableDiagnosticLogs.ps1] --> B[Azure-AVD-Alerts.ps1]
+    B --> C[Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 optional]
+    C --> D[Send-AVD-Webhook-TestAlert.ps1 optional]
+
+    A1[Enable AVD diagnostics to Log Analytics] --- A
+    B1[Create or update AVD-Category alerts and AVD-Alerts action group] --- B
+    C1[Deploy AVD-alert-details Logic App and ensure AVD-Alerts-Detailed webhook action group] --- C
+    C2[Ensure Office365 connection and assign Log Analytics Reader to Logic App MI] --- C
+    D1[Post synthetic payload to callback URL for validation] --- D
+```
+
+## Execution Sequence
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor Eng as Engineer
+  participant Diag as AVD-EnableDiagnosticLogs.ps1
+  participant Alerts as Azure-AVD-Alerts.ps1
+  participant Deploy as Deploy-AVD-AlertWebhook-LogicApp-v2.ps1
+  participant Mon as Azure Monitor Scheduled Query Rules
+  participant AG as AVD-Alerts-Detailed Action Group
+  participant LA as Logic App AVD-alert-details
+  participant LAW as Log Analytics Workspace
+  participant O365 as Office365 Connector
+  participant Test as Send-AVD-Webhook-TestAlert.ps1
+
+  Eng->>Diag: Enable diagnostics on AVD resources
+  Diag->>LAW: Route diagnostic logs to workspace
+
+  Eng->>Alerts: Create or update AVD-Category alerts
+  Alerts->>Mon: Configure scheduled query rules and action groups
+
+  Eng->>Deploy: Optional detailed notifier deployment
+  Deploy->>LA: Deploy or update workflow
+  Deploy->>AG: Ensure webhook action group receiver
+  Deploy->>LAW: Assign Log Analytics Reader to Logic App MI
+
+  Mon->>AG: Fire webhook notification on alert match
+  AG->>LA: Invoke callback URL with alert payload
+  LA->>LAW: Query WVDErrors for alert window
+  LAW-->>LA: Return results
+  LA->>O365: Send detailed email
+
+  Eng->>Test: Optional post-deploy validation
+  Test->>LA: Post synthetic payload to callback URL
 ```
 
 ## Critical Prerequisites
@@ -96,20 +119,16 @@ pwsh -NoProfile -File .\Azure-AVD-Alerts.ps1 `
 ### 3) Optional: Add detailed webhook email notifications
 
 ```powershell
-pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
+pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 `
+  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
   -ResourceGroup "YOUR-RG" `
+  -LogicAppName "AVD-alert-details" `
   -Location "eastus2" `
+  -WorkspaceName "YOUR-LAW-NAME" `
+  -WorkspaceResourceGroupName "YOUR-RG" `
   -SendFromEmail "alerts@contoso.com" `
-  -SendToEmail "avd-oncall@contoso.com"
-```
-
-### 4) Optional: Add Teams notifications
-
-```powershell
-pwsh -NoProfile -File .\Deploy-AVD-Teams-Notifier.ps1 `
-  -ResourceGroup "YOUR-RG" `
-  -Location "eastus2" `
-  -TeamsWebhookUrl "https://outlook.office.com/webhook/..."
+  -SendToEmail "avd-oncall@contoso.com" `
+  -Office365ConnectionName "avd-alerts-office365"
 ```
 
 ## Current Alert Model
@@ -118,7 +137,7 @@ The alerts script now deploys consolidated `AVD-Category-*` alerts with:
 
 - Evaluation frequency: every 10 minutes
 - Lookback window: 15 minutes
-- Action groups: email baseline plus optional detailed webhook and Teams
+- Action groups: email baseline plus optional detailed webhook
 
 See `AVD-Alerts/README.md` for full script details, RBAC, category breakdown, and examples.
 

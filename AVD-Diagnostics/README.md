@@ -215,7 +215,7 @@ Use default workspace values:
 ## Version
 
 **Version:** 1.2  
-**Last Updated:** February 2026
+**Last Updated:** March 2026
 
 ## License
 
