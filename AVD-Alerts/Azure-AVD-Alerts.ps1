@@ -56,6 +56,10 @@ QUICK START:
   Receiver name for the webhook action in the detailed action group.
   Default: "AVDAlertsDetailedWebhook"
 
+.PARAMETER DetailedOnly
+  When set, alerts are configured with the detailed webhook action group only.
+  The baseline email action group is not created/updated or attached.
+
 .PARAMETER UseCommonAlertSchemaForWebhook
   When true, webhook receiver uses Azure Monitor common alert schema.
 
@@ -64,6 +68,10 @@ QUICK START:
 
 .PARAMETER LawName
   Name of the Log Analytics workspace.
+
+.PARAMETER WorkspaceResourceGroup
+  Optional resource group containing the Log Analytics workspace. If not specified,
+  ResourceGroup is used.
 
 .PARAMETER Location
   Azure region for scheduled query rules.
@@ -130,6 +138,9 @@ param(
   [string]$DetailedWebhookReceiverName = "AVDAlertsDetailedWebhook",
 
   [Parameter(Mandatory = $false)]
+  [switch]$DetailedOnly,
+
+  [Parameter(Mandatory = $false)]
   [bool]$UseCommonAlertSchemaForWebhook = $true,
 
   [Parameter(Mandatory = $false)]
@@ -139,6 +150,9 @@ param(
   [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
   [string]$LawName = "your-log-analytics-workspace",
+
+  [Parameter(Mandatory = $false)]
+  [string]$WorkspaceResourceGroup,
 
   [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
@@ -212,7 +226,7 @@ Write-Host "[Pre-flight] Subscription: $($accountInfo.name) ($($accountInfo.id))
 
 # Check 4: Validate placeholder parameters have been updated
 $placeholderParams = @()
-if ($EmailTo -eq "your-email@domain.com") { $placeholderParams += "EmailTo" }
+if (-not $DetailedOnly -and $EmailTo -eq "your-email@domain.com") { $placeholderParams += "EmailTo" }
 if ($ResourceGroup -eq "your-resource-group") { $placeholderParams += "ResourceGroup" }
 if ($LawName -eq "your-log-analytics-workspace") { $placeholderParams += "LawName" }
 if ($Location -eq "your-azure-region") { $placeholderParams += "Location" }
@@ -389,14 +403,20 @@ function Test-AlertExists {
 # ----------------------------
 Write-Log "Resolving Log Analytics Workspace: $LawName" "Cyan"
 
+$ResolvedWorkspaceResourceGroup = if ([string]::IsNullOrWhiteSpace($WorkspaceResourceGroup)) {
+  $ResourceGroup
+} else {
+  $WorkspaceResourceGroup
+}
+
 $LawId = az monitor log-analytics workspace show `
-  -g $ResourceGroup `
+  -g $ResolvedWorkspaceResourceGroup `
   -n $LawName `
   --subscription $accountInfo.id `
   --query id -o tsv 2>$null
 
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($LawId)) {
-  throw "Could not resolve Log Analytics workspace id for '$LawName' in RG '$ResourceGroup'."
+  throw "Could not resolve Log Analytics workspace id for '$LawName' in RG '$ResolvedWorkspaceResourceGroup'."
 }
 
 Write-Log "Log Analytics Workspace ID: $LawId" "Gray"
@@ -404,10 +424,12 @@ Write-Log "Log Analytics Workspace ID: $LawId" "Gray"
 # ----------------------------
 # Create / ensure Action Group (email)
 # ----------------------------
-Write-Log "Action Group  : $ActionGroupName" "Cyan"
-Write-Log "Email Receiver: $EmailTo" "Cyan"
+$AgId = $null
+if (-not $DetailedOnly) {
+  Write-Log "Action Group  : $ActionGroupName" "Cyan"
+  Write-Log "Email Receiver: $EmailTo" "Cyan"
 
-if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) {
+  if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) {
   # Check if action group exists
   $agDetailsJson = az monitor action-group show -g $ResourceGroup -n $ActionGroupName --subscription $accountInfo.id -o json 2>$null
   $agExists = ($LASTEXITCODE -eq 0)
@@ -444,10 +466,27 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
   $receiverName = "AVD$emailPrefix$emailHash"
   
   # Check if email receiver already exists with correct email (Phase 1 optimization)
-  $existingReceiver = $agDetails.emailReceivers | Where-Object { $_.emailAddress -eq $EmailTo }
+  $existingReceiver = $agDetails.emailReceivers | Where-Object { $_.emailAddress -eq $EmailTo } | Select-Object -First 1
   
   if ($existingReceiver) {
-    Write-Log "Email '$EmailTo' is already a receiver on action group '$ActionGroupName' - no change needed." "Gray"
+    if ($existingReceiver.useCommonAlertSchema -eq $true) {
+      Write-Log "Email '$EmailTo' exists with common alert schema enabled - switching to legacy email format." "Yellow"
+      az monitor action-group update -g $ResourceGroup -n $ActionGroupName --subscription $accountInfo.id --remove emailReceivers name=$($existingReceiver.name) 2>&1 | Out-Null
+
+      $emailOutput = az monitor action-group update `
+        -g $ResourceGroup `
+        -n $ActionGroupName `
+        --subscription $accountInfo.id `
+        --add-action email $receiverName $EmailTo false 2>&1
+
+      if ($LASTEXITCODE -ne 0) {
+        Write-Log "Warning: Failed to reset email receiver with legacy schema: $emailOutput" "Yellow"
+      } else {
+        Write-Log "Email receiver updated to legacy schema format." "Green"
+      }
+    } else {
+      Write-Log "Email '$EmailTo' is already a receiver on action group '$ActionGroupName' - no change needed." "Gray"
+    }
   } else {
     Write-Log "Adding email receiver '$EmailTo' to action group '$ActionGroupName'..." "Gray"
     
@@ -464,7 +503,7 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
       -g $ResourceGroup `
       -n $ActionGroupName `
       --subscription $accountInfo.id `
-      --add-action email $receiverName $EmailTo 2>&1
+      --add-action email $receiverName $EmailTo false 2>&1
     
     if ($LASTEXITCODE -ne 0) {
       # Parse error to determine if it's expected (duplicate) or actual failure
@@ -489,19 +528,22 @@ if ($PSCmdlet.ShouldProcess($ActionGroupName, "Create or update action group")) 
   }
 
   Write-Log "Action Group ID: $AgId" "Gray"
+  } else {
+    Write-Log "[WhatIf] Would retrieve action group ID" "Yellow"
+    # Get actual subscription ID for realistic WhatIf mode
+    $subId = $accountInfo.id
+    $AgId = "/subscriptions/$subId/resourceGroups/$ResourceGroup/providers/microsoft.insights/actionGroups/$ActionGroupName"
+    Write-Log "Action Group ID (simulated): $AgId" "Gray"
+  }
 } else {
-  Write-Log "[WhatIf] Would retrieve action group ID" "Yellow"
-  # Get actual subscription ID for realistic WhatIf mode
-  $subId = $accountInfo.id
-  $AgId = "/subscriptions/$subId/resourceGroups/$ResourceGroup/providers/microsoft.insights/actionGroups/$ActionGroupName"
-  Write-Log "Action Group ID (simulated): $AgId" "Gray"
+  Write-Log "DetailedOnly mode enabled - baseline email action group will not be created or attached." "Yellow"
 }
 
 # ----------------------------
 # Optional detailed webhook Action Group
 # ----------------------------
 $DetailedAgId = $null
-if (-not [string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
+if ($DetailedOnly -or -not [string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
   Write-Log "Detailed Webhook URL: $DetailedResultsWebhookUrl" "Cyan"
   Write-Log "Detailed Action Group: $DetailedActionGroupName" "Cyan"
 
@@ -510,6 +552,9 @@ if (-not [string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
     $detailedAgExists = ($LASTEXITCODE -eq 0)
 
     if (-not $detailedAgExists) {
+      if ([string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
+        throw "Detailed action group '$DetailedActionGroupName' was not found and -DetailedResultsWebhookUrl was not provided. Provide a webhook URL or pre-create the detailed action group."
+      }
       Write-Log "Detailed action group '$DetailedActionGroupName' not found - creating..." "Yellow"
       $createArgs = @(
         'monitor', 'action-group', 'create',
@@ -534,6 +579,10 @@ if (-not [string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
       $receiverByName = $webhookReceivers | Where-Object { $_.name -eq $DetailedWebhookReceiverName } | Select-Object -First 1
       $receiverWithUrl = $webhookReceivers | Where-Object { $_.serviceUri -eq $DetailedResultsWebhookUrl } | Select-Object -First 1
 
+      if ([string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
+        Write-Log "Detailed webhook URL not provided - using existing detailed action group as-is." "Gray"
+      }
+
       # Self-heal: remove legacy receiver name to prevent duplicate webhook notifications.
       $legacyDetailedWebhookReceiverName = 'AVDAlertDetails'
       if ($DetailedWebhookReceiverName -ne $legacyDetailedWebhookReceiverName) {
@@ -544,7 +593,7 @@ if (-not [string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
         }
       }
 
-      if ($null -eq $receiverWithUrl) {
+      if (-not [string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl) -and $null -eq $receiverWithUrl) {
         if ($null -ne $receiverByName) {
           Write-Log "Webhook receiver name exists with different URL - replacing receiver '$DetailedWebhookReceiverName'." "Yellow"
           az monitor action-group update -g $ResourceGroup -n $DetailedActionGroupName --subscription $accountInfo.id --remove-action $DetailedWebhookReceiverName 2>&1 | Out-Null
@@ -589,9 +638,18 @@ if (-not [string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
   }
 }
 
-$ActionGroupIds = @($AgId)
-if (-not [string]::IsNullOrWhiteSpace($DetailedAgId)) {
+$ActionGroupIds = @()
+if ($DetailedOnly) {
+  if ([string]::IsNullOrWhiteSpace($DetailedAgId)) {
+    throw "-DetailedOnly requires a valid detailed action group. Provide -DetailedResultsWebhookUrl or pre-create '$DetailedActionGroupName'."
+  }
   $ActionGroupIds += $DetailedAgId
+  Write-Log "Using detailed-only alert routing (no baseline email action group)." "Cyan"
+} else {
+  $ActionGroupIds += $AgId
+  if (-not [string]::IsNullOrWhiteSpace($DetailedAgId)) {
+    $ActionGroupIds += $DetailedAgId
+  }
 }
 
 # ----------------------------
@@ -644,7 +702,7 @@ function New-OrSkip-ScheduledQueryAlert {
       $output = az @azCmdArgs 2>&1
       
       if ($LASTEXITCODE -eq 0) {
-        Write-Log "  ✓ Success" "Green"
+        Write-Log "  [OK] Success" "Green"
         $status = "Success"
         $action  = "Created"
         $script:NewlyCreatedAlerts += $AlertName
@@ -656,14 +714,14 @@ function New-OrSkip-ScheduledQueryAlert {
           $action  = "Skipped"
           $script:ExistingAlerts += $AlertName
         } else {
-          Write-Log "  ✗ Failed: $output" "Red"
+          Write-Log "  [FAIL] Failed: $output" "Red"
           $status = "Failed"
           $action  = "Failed"
         }
       }
     }
     catch {
-      Write-Log "  ✗ Error: $($_.Exception.Message)" "Red"
+      Write-Log "  [FAIL] Error: $($_.Exception.Message)" "Red"
       $status = "Error"
       $action  = "Error"
     }
@@ -773,197 +831,44 @@ if (-not [string]::IsNullOrWhiteSpace($DetailedAgId) -and $existingCount -gt 0) 
   Write-Log "" 
 }
 
-# Phase 2: Parallel processing for faster execution
-# Note: ForEach-Object -Parallel requires PowerShell 7+
-if ($PSVersionTable.PSVersion.Major -ge 7) {
-  Write-Log "Using parallel processing (PowerShell 7+)" "Cyan"
-  
-  # Parallel processing with throttling
-  $throttleLimit = 5  # Process 5 alerts simultaneously
-  $isWhatIf = $PSBoundParameters.ContainsKey('WhatIf')
-  $createOnlyLocal = $CreateOnly
-  # Capture the pre-verified existence map into a regular variable for parallel scope
-  $alertExistenceMapLocal = $script:alertExistenceMap
+# Alert processing (sequential for deterministic and parser-safe behavior)
+Write-Log "Using sequential processing" "Cyan"
 
-  $results = $alertDefinitions | ForEach-Object -ThrottleLimit $throttleLimit -Parallel {
-    $alert = $_
+$alertCount = 0
+foreach ($alert in $alertDefinitions) {
+  $alertCount++
+  $percentComplete = [Math]::Round(($alertCount / $alertDefinitions.Count) * 100)
+  $progressStatus = ('Processing alert {0} of {1}: {2}' -f $alertCount, $alertDefinitions.Count, $alert.Name)
+  Write-Progress -Activity 'Creating AVD Alerts (create-only)' -Status $progressStatus -PercentComplete $percentComplete
 
-    # Import shared variables from caller scope
-    $ResourceGroup    = ${using:ResourceGroup}
-    $Location         = ${using:Location}
-    $accountInfo      = ${using:accountInfo}
-    $LawId            = ${using:LawId}
-    $EvalFrequency    = ${using:EvalFrequency}
-    $WindowSize       = ${using:WindowSize}
-    $Severity         = ${using:Severity}
-    $CreateOnly       = ${using:createOnlyLocal}
-    $ActionGroupIds   = ${using:ActionGroupIds}
-    $alertExistenceMap = ${using:alertExistenceMapLocal}
-    $isWhatIf         = ${using:isWhatIf}
-    
-    # Build KQL query (custom per alert or default CodeSymbolic-based)
-    if ($alert.ContainsKey('Kql')) {
-      $kql = $alert.Kql
-    } else {
-      $kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic == '$($alert.CodeSymbolic)'`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId"
-    }
-    
-    # Check if alert exists using the pre-verified existence map
-    $alertExists = $alertExistenceMap[$alert.Name] -eq $true
-    
-    $result = [PSCustomObject]@{
-      AlertName = $alert.Name
-      Description = $alert.Description
-      Status = "Processing"
-      Action = ""
-      ErrorOutput = ""
-      AlreadyExisted = $alertExists
-    }
-    
-    if ($isWhatIf) {
-      # WhatIf mode - don't execute Azure CLI commands
-      $result.Status = "WhatIf"
-      if ($alertExists -and $CreateOnly) {
-        $result.Action = "WouldSkip"
-      } else {
-        $result.Action = "WouldCreate"
-      }
-    } elseif ($alertExists -and $CreateOnly) {
-      # Alert already exists - skip it
-      $result.Status = "Skipped"
-      $result.Action = "Skipped"
-    } else {
-      # Execute actual Azure CLI commands
-      try {
-        # Convert multi-line query to single line for Azure CLI
-        $queryEscaped = $kql -replace "`r", "" -replace "`n", " "
-        
-        $azCmdArgs = @(
-          'monitor', 'scheduled-query', 'create',
-          '-g', $ResourceGroup, '-n', $alert.Name, '-l', $Location,
-          '--subscription', $accountInfo.id, '--scopes', $LawId,
-          '--evaluation-frequency', $EvalFrequency, '--window-size', $WindowSize,
-          '--severity', "$Severity", '--description', $alert.Description,
-          '--condition', "count 'Query1' > 0", '--condition-query', "Query1=$queryEscaped"
-        )
-        $azCmdArgs += '--action-groups'
-        $azCmdArgs += $ActionGroupIds
-        $output = az @azCmdArgs 2>&1
-        
-        if ($LASTEXITCODE -eq 0) {
-          $result.Status = "Success"
-          $result.Action = "Created"
-        } else {
-          $errStr = ($output | Out-String).ToLower()
-          if ($errStr -match "conflict|already exists") {
-            $result.Status = "Skipped"
-            $result.Action = "Skipped"
-            $result.AlreadyExisted = $true
-          } else {
-            $result.Status = "Failed"
-            $result.Action = "Failed"
-            $result.ErrorOutput = $output | Out-String
-          }
-        }
-      } catch {
-        $result.Status = "Error"
-        $result.Action = "Error"
-        $result.ErrorOutput = $_.Exception.Message
-      }
-    }
-    
-    # Return result
-    $result
-  }
-  
-  # Process results
-  $alertCount = 0
-  foreach ($result in $results) {
-    $alertCount++
-    $percentComplete = [Math]::Round(($alertCount / $alertDefinitions.Count) * 100)
-    Write-Progress -Activity "Collecting Results" -Status "Processed $alertCount of $($alertDefinitions.Count) alerts" -PercentComplete $percentComplete
-    
-    # Add to tracking arrays
-    if ($result.AlreadyExisted) {
-      $ExistingAlerts += $result.AlertName
-    } elseif ($result.Status -eq "Success") {
-      $NewlyCreatedAlerts += $result.AlertName
-    }
-    
-    # Log output
-    $severityText = switch ($Severity) {
-      0 { "Critical" } 1 { "Error" } 2 { "Warning" } 3 { "Informational" } 4 { "Verbose" }
-    }
-    
-    if ($result.Status -eq "WhatIf") {
-      Write-Log "[WhatIf] Would $(if ($result.AlreadyExisted) { 'skip (already exists)' } else { 'create' }) alert: $($result.AlertName)" "Yellow"
-    } elseif ($result.Status -eq "Skipped") {
-      Write-Log "Create-only mode: skipping existing alert: $($result.AlertName)" "Gray"
-    } else {
-      Write-Log "Creating new alert: $($result.AlertName) (Severity: $severityText)" "Cyan"
-      
-      if ($result.Status -eq "Success") {
-        Write-Log "  ✓ Success" "Green"
-      } else {
-        $errDetail = if ($result.ErrorOutput) { ": $($result.ErrorOutput.Trim())" } else { "" }
-        Write-Log "  ✗ $($result.Status)$errDetail" "Red"
-      }
-    }
-    
-    # Add to CSV results
-    $AlertResults += [pscustomobject]@{
-      AlertName   = $result.AlertName
-      Description = $result.Description
-      Severity    = "$Severity ($severityText)"
-      Action      = $result.Action
-      Status      = $result.Status
+  # Status report for WhatIf mode if running longer than 30 seconds
+  if ($PSBoundParameters.ContainsKey('WhatIf')) {
+    $elapsed = (Get-Date) - $alertProcessingStart
+    $timeSinceLastReport = (Get-Date) - $lastStatusReport
+
+    if ($elapsed.TotalSeconds -ge 30 -and $timeSinceLastReport.TotalSeconds -ge 30) {
+      Write-Log ""
+      Write-Log "=== WhatIf Status Report ===" "Yellow"
+      Write-Log "Elapsed Time: $([Math]::Round($elapsed.TotalSeconds, 1))s" "Yellow"
+      $whatIfProgress = ('Progress: {0} of {1} alerts processed ({2} percent)' -f $alertCount, $alertDefinitions.Count, $percentComplete)
+      Write-Log $whatIfProgress "Yellow"
+      Write-Log "Current: $($alert.Name)" "Yellow"
+      Write-Log ""
+      $lastStatusReport = Get-Date
     }
   }
-  
-  Write-Progress -Activity "Collecting Results" -Completed
-  
-} else {
-  # Fallback: Sequential processing for PowerShell 5.1
-  Write-Log "Using sequential processing (PowerShell 5.1)" "Yellow"
-  
-  $alertCount = 0
-  foreach ($alert in $alertDefinitions) {
-    $alertCount++
-    $percentComplete = [Math]::Round(($alertCount / $alertDefinitions.Count) * 100)
-    Write-Progress -Activity "Creating AVD Alerts (create-only)" -Status "Processing alert $alertCount of $($alertDefinitions.Count): $($alert.Name)" -PercentComplete $percentComplete
-    
-    # Status report for WhatIf mode if running longer than 30 seconds
-    if ($PSBoundParameters.ContainsKey('WhatIf')) {
-      $elapsed = (Get-Date) - $alertProcessingStart
-      $timeSinceLastReport = (Get-Date) - $lastStatusReport
-      
-      if ($elapsed.TotalSeconds -ge 30 -and $timeSinceLastReport.TotalSeconds -ge 30) {
-        Write-Log "" 
-        Write-Log "=== WhatIf Status Report ===" "Yellow"
-        Write-Log "Elapsed Time: $([Math]::Round($elapsed.TotalSeconds, 1))s" "Yellow"
-        Write-Log "Progress: $alertCount of $($alertDefinitions.Count) alerts processed ($percentComplete%)" "Yellow"
-        Write-Log "Current: $($alert.Name)" "Yellow"
-        Write-Log "" 
-        $lastStatusReport = Get-Date
-      }
-    }
-    
-    if ($alert.ContainsKey('Kql')) {
-      $kql = $alert.Kql
-    } else {
-      $kql = @"
-WVDErrors
-| where TimeGenerated > ago(15m)
-| where CodeSymbolic == '$($alert.CodeSymbolic)'
-| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId
-"@
-    }
-    
-    New-OrSkip-ScheduledQueryAlert -AlertName $alert.Name -Description $alert.Description -Kql $kql
+
+  if ($alert.ContainsKey('Kql')) {
+    $kql = $alert.Kql
   }
-  
-  Write-Progress -Activity "Creating AVD Alerts (create-only)" -Completed
+  else {
+    $kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic == '$($alert.CodeSymbolic)'`n| project UserName, Source, CodeSymbolic, Message, Operation, _ResourceId"
+  }
+
+  New-OrSkip-ScheduledQueryAlert -AlertName $alert.Name -Description $alert.Description -Kql $kql
 }
+
+Write-Progress -Activity 'Creating AVD Alerts (create-only)' -Completed
 
 # ----------------------------
 # Export Results to CSV
@@ -991,12 +896,20 @@ if ($AlertResults.Count -gt 0) {
 # ----------------------------
 Write-Log "" 
 Write-Log "=== Summary ===" "Cyan"
-Write-Log "Action Group: $ActionGroupName" "White"
-Write-Log "Email Recipient: $EmailTo" "White"
+if ($DetailedOnly) {
+  Write-Log "Action Groups: Detailed only ($DetailedActionGroupName)" "White"
+} else {
+  Write-Log "Action Group: $ActionGroupName" "White"
+  Write-Log "Email Recipient: $EmailTo" "White"
+}
 if (-not [string]::IsNullOrWhiteSpace($DetailedResultsWebhookUrl)) {
   Write-Log "Detailed Webhook: Enabled ($DetailedActionGroupName)" "White"
 } else {
-  Write-Log "Detailed Webhook: Disabled" "Gray"
+  if ($DetailedOnly) {
+    Write-Log "Detailed Webhook: Enabled (existing action group)" "White"
+  } else {
+    Write-Log "Detailed Webhook: Disabled" "Gray"
+  }
 }
 Write-Log "Total Alerts Processed: $($AlertResults.Count)" "White"
 Write-Log "" 
@@ -1005,7 +918,8 @@ $failedCount = ($AlertResults | Where-Object Status -eq "Failed").Count
 $whatIfCount = ($AlertResults | Where-Object Status -eq "WhatIf").Count
 
 if ($whatIfCount -gt 0) {
-  Write-Log "WhatIf Mode: $whatIfCount alert(s) would be created; $($ExistingAlerts.Count) would be skipped (already exist)" "Yellow"
+  $whatIfSummary = ('WhatIf Mode: {0} alert(s) would be created; {1} would be skipped (already exist)' -f $whatIfCount, $ExistingAlerts.Count)
+  Write-Log $whatIfSummary "Yellow"
 } else {
   Write-Log "=== Alert Statistics ===" "Cyan"
   Write-Log "Alerts Newly Created: $($NewlyCreatedAlerts.Count)" "Green"
@@ -1035,12 +949,10 @@ if ($whatIfCount -gt 0) {
     Write-Log "1. Delete existing alerts using Azure Portal or Azure CLI" "Yellow"
     Write-Log "2. Run this PowerShell command to delete all AVD alerts:" "Yellow"
     Write-Log "" 
-    $deleteCmd = @"
-`$alerts = az monitor scheduled-query list -g $ResourceGroup --query "[?starts_with(name,'AVD-')].name" -o tsv
-`$alerts | ForEach-Object { 
-  if (`$_) { az monitor scheduled-query delete -g $ResourceGroup -n `$_ -y } 
-}
-"@
+    $deleteCmd = '$alerts = az monitor scheduled-query list -g ' + $ResourceGroup + ' --query "[?starts_with(name,''AVD-'')].name" -o tsv' + "`n" +
+      '$alerts | ForEach-Object {' + "`n" +
+      '  if ($_){ az monitor scheduled-query delete -g ' + $ResourceGroup + ' -n $_ -y }' + "`n" +
+      '}'
     Write-Log $deleteCmd "Gray"
     Write-Log "" 
     Write-Log "3. Re-run this script to create fresh alerts" "Yellow"

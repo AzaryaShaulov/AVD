@@ -1,6 +1,6 @@
 "AlertName","Description","Severity","Action","Status"
-"AVD-Category-AuthorizationPolicy","Consolidated authorization and logon rights failures in AVD.","1 (Error)","Skipped","Skipped"
 "AVD-Category-AuthenticationIdentity","Consolidated authentication and identity failures in AVD.","1 (Error)","Skipped","Skipped"
+"AVD-Category-AuthorizationPolicy","Consolidated authorization and logon rights failures in AVD.","1 (Error)","Skipped","Skipped"
 "AVD-Category-ConnectionNetworkGateway","Consolidated AVD client, DNS, reverse connect, and gateway transport failures.","1 (Error)","Skipped","Skipped"
 "AVD-Category-SessionHostHealthCapacity","Consolidated session host availability and capacity issues.","1 (Error)","Skipped","Skipped"
 "AVD-Category-PersonalDesktopAssignment","Consolidated personal desktop assignment and startup failures.","1 (Error)","Skipped","Skipped"

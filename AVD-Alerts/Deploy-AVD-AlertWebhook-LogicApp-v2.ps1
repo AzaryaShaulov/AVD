@@ -5,6 +5,7 @@ param(
     [string]$Location = "",
     [string]$WorkspaceName = "",
     [string]$WorkspaceResourceGroupName = "",
+    [string[]]$SendToEmails = @(),
     [string]$SendToEmail = "",
     [string]$SendFromEmail = "",
     [string]$Office365ConnectionName = "office365",
@@ -27,6 +28,7 @@ $HardCoded = @{
     Location                    = ""
     WorkspaceName               = ""
     WorkspaceResourceGroupName  = ""
+    SendToEmails                = @()
     SendToEmail                 = ""
     SendFromEmail               = ""
     Office365ConnectionName     = "office365"
@@ -110,7 +112,7 @@ function Invoke-AzCliText {
     return ($result | Out-String).Trim()
 }
 
-function Ensure-DetailedActionGroupWebhook {
+function Set-DetailedActionGroupWebhook {
     param(
         [Parameter(Mandatory = $true)]
         [string]$SubscriptionId,
@@ -154,6 +156,170 @@ function Ensure-DetailedActionGroupWebhook {
     }
 }
 
+function Set-AVDCategoryAlertsToDetailedOnly {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SubscriptionId,
+        [Parameter(Mandatory = $true)]
+        [string]$ResourceGroupName,
+        [Parameter(Mandatory = $true)]
+        [string]$DetailedActionGroupName
+    )
+
+    $detailedActionGroupId = Invoke-AzCliText -Arguments @(
+        "monitor", "action-group", "show",
+        "--resource-group", $ResourceGroupName,
+        "--name", $DetailedActionGroupName,
+        "--subscription", $SubscriptionId,
+        "--query", "id",
+        "-o", "tsv"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($detailedActionGroupId)) {
+        throw "Failed to resolve action group ID for '$DetailedActionGroupName'."
+    }
+
+    $alertNameOutput = Invoke-AzCliText -Arguments @(
+        "monitor", "scheduled-query", "list",
+        "--resource-group", $ResourceGroupName,
+        "--subscription", $SubscriptionId,
+        "--query", "[?starts_with(name, 'AVD-Category-')].name",
+        "-o", "tsv"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($alertNameOutput)) {
+        Write-Warning "No existing AVD-Category alert rules were found in resource group '$ResourceGroupName'."
+        return
+    }
+
+    $alertNames = $alertNameOutput -split "[\r\n]+" |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_.Trim() }
+
+    $updated = 0
+    $failed = @()
+    foreach ($alertName in $alertNames) {
+        $updateOutput = & az monitor scheduled-query update `
+            --resource-group $ResourceGroupName `
+            --name $alertName `
+            --subscription $SubscriptionId `
+            --action-groups $detailedActionGroupId 2>&1
+
+        if ($LASTEXITCODE -eq 0) {
+            $updated++
+            Write-Host "Updated '$alertName' to detailed-only action group." -ForegroundColor Gray
+        }
+        else {
+            $failed += $alertName
+            Write-Warning "Failed to update alert '$alertName' to detailed-only action group. $updateOutput"
+        }
+    }
+
+    if ($failed.Count -gt 0) {
+        throw "Updated $updated alert(s), but failed to update $($failed.Count): $($failed -join ', ')"
+    }
+
+    Write-Host "All $updated AVD-Category alert(s) now use detailed-only action group '$DetailedActionGroupName'." -ForegroundColor Green
+}
+
+function Ensure-AVDCategoryAlertsExist {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SubscriptionId,
+        [Parameter(Mandatory = $true)]
+        [string]$ResourceGroupName,
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceResourceGroupName,
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceName,
+        [Parameter(Mandatory = $true)]
+        [string]$Location,
+        [Parameter(Mandatory = $true)]
+        [string]$DetailedActionGroupName,
+        [Parameter(Mandatory = $true)]
+        [string]$DetailedWebhookReceiverName,
+        [Parameter(Mandatory = $true)]
+        [string]$DetailedResultsWebhookUrl
+    )
+
+    $existingAlertNamesOutput = Invoke-AzCliText -Arguments @(
+        "monitor", "scheduled-query", "list",
+        "--resource-group", $ResourceGroupName,
+        "--subscription", $SubscriptionId,
+        "--query", "[?starts_with(name, 'AVD-Category-')].name",
+        "-o", "tsv"
+    )
+
+    $existingAlertNames = @()
+    if (-not [string]::IsNullOrWhiteSpace($existingAlertNamesOutput)) {
+        $existingAlertNames = $existingAlertNamesOutput -split "[\r\n]+" |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { $_.Trim() }
+    }
+
+    $requiredAlertNames = @(
+        'AVD-Category-AuthenticationIdentity',
+        'AVD-Category-AuthorizationPolicy',
+        'AVD-Category-ConnectionNetworkGateway',
+        'AVD-Category-SessionHostHealthCapacity',
+        'AVD-Category-PersonalDesktopAssignment',
+        'AVD-Category-DeviceGraphicsInput',
+        'AVD-Category-FSLogixProfileStorage',
+        'AVD-Category-UnknownUnclassified'
+    )
+
+    $missingAlertNames = $requiredAlertNames | Where-Object { $existingAlertNames -notcontains $_ }
+    if ($missingAlertNames.Count -eq 0) {
+        Write-Host "All required AVD-Category alerts already exist; bootstrap creation is not required." -ForegroundColor Gray
+        return
+    }
+
+    $coreAlertsScriptPath = Join-Path -Path $PSScriptRoot -ChildPath "Azure-AVD-Alerts.ps1"
+    if (-not (Test-Path -Path $coreAlertsScriptPath)) {
+        throw "Could not find Azure-AVD-Alerts.ps1 at '$coreAlertsScriptPath'."
+    }
+
+    Write-Host "Detected $($missingAlertNames.Count) missing AVD-Category alert(s). Bootstrapping core alerts via Azure-AVD-Alerts.ps1 (detailed-only mode)..." -ForegroundColor Yellow
+
+    & $coreAlertsScriptPath `
+        -SubscriptionId $SubscriptionId `
+        -ResourceGroup $ResourceGroupName `
+        -WorkspaceResourceGroup $WorkspaceResourceGroupName `
+        -LawName $WorkspaceName `
+        -Location $Location `
+        -DetailedOnly `
+        -DetailedActionGroupName $DetailedActionGroupName `
+        -DetailedWebhookReceiverName $DetailedWebhookReceiverName `
+        -DetailedResultsWebhookUrl $DetailedResultsWebhookUrl `
+        -CreateOnly $true
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bootstrap alert creation via Azure-AVD-Alerts.ps1 failed."
+    }
+
+    $postBootstrapOutput = Invoke-AzCliText -Arguments @(
+        "monitor", "scheduled-query", "list",
+        "--resource-group", $ResourceGroupName,
+        "--subscription", $SubscriptionId,
+        "--query", "[?starts_with(name, 'AVD-Category-')].name",
+        "-o", "tsv"
+    )
+
+    $postBootstrapAlertNames = @()
+    if (-not [string]::IsNullOrWhiteSpace($postBootstrapOutput)) {
+        $postBootstrapAlertNames = $postBootstrapOutput -split "[\r\n]+" |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { $_.Trim() }
+    }
+
+    $stillMissing = $requiredAlertNames | Where-Object { $postBootstrapAlertNames -notcontains $_ }
+    if ($stillMissing.Count -gt 0) {
+        throw "Bootstrap completed but required alerts are still missing: $($stillMissing -join ', ')"
+    }
+
+    Write-Host "Bootstrap complete: required AVD-Category alerts now exist." -ForegroundColor Green
+}
+
 # =========================
 # Resolve runtime values
 # =========================
@@ -164,8 +330,16 @@ if ($UseHardCodedDefaults) {
     $Location                   = Resolve-Setting -Value $Location                  -DefaultValue $HardCoded.Location                   -Name "Location"
     $WorkspaceName              = Resolve-Setting -Value $WorkspaceName             -DefaultValue $HardCoded.WorkspaceName              -Name "WorkspaceName"
     $WorkspaceResourceGroupName = Resolve-Setting -Value $WorkspaceResourceGroupName-DefaultValue $HardCoded.WorkspaceResourceGroupName -Name "WorkspaceResourceGroupName"
-    $SendToEmail                = Resolve-Setting -Value $SendToEmail               -DefaultValue $HardCoded.SendToEmail                -Name "SendToEmail"
     $SendFromEmail              = Resolve-Setting -Value $SendFromEmail             -DefaultValue $HardCoded.SendFromEmail              -Name "SendFromEmail"
+
+    if (($SendToEmails.Count -eq 0) -and [string]::IsNullOrWhiteSpace($SendToEmail)) {
+        if ($HardCoded.SendToEmails -and $HardCoded.SendToEmails.Count -gt 0) {
+            $SendToEmails = $HardCoded.SendToEmails
+        }
+        else {
+            $SendToEmail = Resolve-Setting -Value $SendToEmail -DefaultValue $HardCoded.SendToEmail -Name "SendToEmail"
+        }
+    }
 
     if ([string]::IsNullOrWhiteSpace($Office365ConnectionName)) {
         $Office365ConnectionName = $HardCoded.Office365ConnectionName
@@ -190,9 +364,29 @@ else {
     $Location                   = Resolve-Setting -Value $Location                   -DefaultValue "" -Name "Location"
     $WorkspaceName              = Resolve-Setting -Value $WorkspaceName              -DefaultValue "" -Name "WorkspaceName"
     $WorkspaceResourceGroupName = Resolve-Setting -Value $WorkspaceResourceGroupName -DefaultValue "" -Name "WorkspaceResourceGroupName"
-    $SendToEmail                = Resolve-Setting -Value $SendToEmail                -DefaultValue "" -Name "SendToEmail"
     $SendFromEmail              = Resolve-Setting -Value $SendFromEmail              -DefaultValue "" -Name "SendFromEmail"
+
+    if (($SendToEmails.Count -eq 0) -and [string]::IsNullOrWhiteSpace($SendToEmail)) {
+        throw "Missing required value for 'SendToEmails' or 'SendToEmail'. Provide at least one recipient."
+    }
 }
+
+# Normalize recipients from both parameters. Supports either array input or ';' / ',' delimited strings.
+$ResolvedSendToEmails = @($SendToEmails)
+if (-not [string]::IsNullOrWhiteSpace($SendToEmail)) {
+    $ResolvedSendToEmails += $SendToEmail
+}
+$ResolvedSendToEmails = @(
+    $ResolvedSendToEmails |
+    ForEach-Object { $_ -split '[;,]' } |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    Select-Object -Unique
+)
+if ($ResolvedSendToEmails.Count -eq 0) {
+    throw "No valid recipients were resolved from 'SendToEmails' or 'SendToEmail'."
+}
+$SendToEmailValue = ($ResolvedSendToEmails -join ';')
 
 if ([string]::IsNullOrWhiteSpace($Office365ConnectionName)) {
     $Office365ConnectionName = "office365"
@@ -576,7 +770,7 @@ $sendEmailAction = @{
             }
         }
         body   = @{
-            To         = $SendToEmail
+            To         = $SendToEmailValue
             Subject    = "@{concat('AVD Alert - ', coalesce(triggerBody()?['data']?['essentials']?['alertRule'], 'WVDErrors'))}"
             Body       = $alertEmailHtmlExpr
             From       = $SendFromEmail
@@ -636,22 +830,6 @@ $workflowDefinition = @{
             }
         }
 
-        Initialize_KqlQueryText = @{
-            type   = 'InitializeVariable'
-            inputs = @{
-                variables = @(
-                    @{
-                        name  = 'KqlQueryText'
-                        type  = 'string'
-                        value = ''
-                    }
-                )
-            }
-            runAfter = @{
-                Initialize_AlertDefinitionMap = @('Succeeded')
-            }
-        }
-
         Initialize_AlertDescription = @{
             type   = 'InitializeVariable'
             inputs = @{
@@ -664,7 +842,7 @@ $workflowDefinition = @{
                 )
             }
             runAfter = @{
-                Initialize_KqlQueryText = @('Succeeded')
+                Initialize_AlertDefinitionMap = @('Succeeded')
             }
         }
 
@@ -682,21 +860,10 @@ $workflowDefinition = @{
             }
         }
 
-        Set_KqlQueryText = @{
-            type   = 'SetVariable'
-            inputs = @{
-                name  = 'KqlQueryText'
-                value = $kqlQueryExpr
-            }
-            runAfter = @{
-                Set_AlertDescriptionText = @('Succeeded')
-            }
-        }
-
         Query_WVDErrors = @{
             type     = 'Http'
             runAfter = @{
-                Set_KqlQueryText = @('Succeeded')
+                Set_AlertDescriptionText = @('Succeeded')
             }
             inputs   = @{
                 method         = 'POST'
@@ -705,7 +872,7 @@ $workflowDefinition = @{
                     'Content-Type' = 'application/json'
                 }
                 body           = @{
-                    query = "@{variables('KqlQueryText')}"
+                    query = $kqlQueryExpr
                 }
                 authentication = @{
                     type     = 'ManagedServiceIdentity'
@@ -908,7 +1075,7 @@ $principalId = $logicApp.identity.principalId
 Write-Host "Logic App Managed Identity PrincipalId: $principalId"
 
 Write-Step "Assigning Log Analytics Reader to Logic App managed identity"
-$roleAssignOutput = & az role assignment create `
+& az role assignment create `
     --assignee-object-id $principalId `
     --assignee-principal-type ServicePrincipal `
     --role "Log Analytics Reader" `
@@ -936,13 +1103,30 @@ if ([string]::IsNullOrWhiteSpace($callbackValue)) {
 }
 
 Write-Step "Ensuring detailed webhook action group"
-Ensure-DetailedActionGroupWebhook `
+Set-DetailedActionGroupWebhook `
     -SubscriptionId $SubscriptionId `
     -ResourceGroupName $ResourceGroupName `
     -ActionGroupName $DetailedActionGroupName `
     -ReceiverName $DetailedWebhookReceiverName `
     -ServiceUri $callbackValue
 Write-Host "Detailed webhook action group '$DetailedActionGroupName' is configured."
+
+Write-Step "Ensuring AVD-Category alerts exist (bootstrap if needed)"
+Ensure-AVDCategoryAlertsExist `
+    -SubscriptionId $SubscriptionId `
+    -ResourceGroupName $ResourceGroupName `
+    -WorkspaceResourceGroupName $WorkspaceResourceGroupName `
+    -WorkspaceName $WorkspaceName `
+    -Location $Location `
+    -DetailedActionGroupName $DetailedActionGroupName `
+    -DetailedWebhookReceiverName $DetailedWebhookReceiverName `
+    -DetailedResultsWebhookUrl $callbackValue
+
+Write-Step "Switching AVD-Category alerts to detailed-only action group"
+Set-AVDCategoryAlertsToDetailedOnly `
+    -SubscriptionId $SubscriptionId `
+    -ResourceGroupName $ResourceGroupName `
+    -DetailedActionGroupName $DetailedActionGroupName
 
 Write-Host ""
 Write-Host "Deployment complete." -ForegroundColor Green
@@ -957,3 +1141,5 @@ Write-Host "3. Your Azure Monitor alert rule names should match one of the follo
 $alertDefinitions | ForEach-Object { Write-Host "   - $($_.Name)" }
 Write-Host "4. If no rule name matches, the script uses the fallback WVDErrors query."
 Write-Host "5. Detailed webhook action group: $DetailedActionGroupName ($DetailedWebhookReceiverName)"
+Write-Host "6. If AVD-Category alerts were missing, they were auto-created via Azure-AVD-Alerts.ps1 in detailed-only mode."
+Write-Host "7. Existing AVD-Category alerts were switched to detailed-only action group routing."

@@ -4,7 +4,7 @@
 
 This folder contains production-focused PowerShell scripts for deploying and maintaining Azure Virtual Desktop (AVD) alerting.
 
-These scripts complement Azure Virtual Desktop Insights by adding proactive, category-based alerting from Log Analytics data.
+These scripts are designed to *complement Azure Virtual Desktop Insights* by adding proactive, category-based alerting from Log Analytics data.
 
 ## Scripts In Scope
 
@@ -12,7 +12,7 @@ These scripts complement Azure Virtual Desktop Insights by adding proactive, cat
 Creates and maintains core `AVD-Category-*` scheduled query alerts and the primary email action group (`AVD-Alerts`).
 
 2. `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`
-Deploys/updates the detailed email Logic App (`AVD-alert-details`), ensures Office365 API connection exists, assigns Log Analytics Reader to Logic App managed identity, and ensures detailed webhook action group (`AVD-Alerts-Detailed`).
+Deploys/updates the detailed email Logic App (`AVD-alert-details`), ensures Office365 API connection exists, assigns Log Analytics Reader to Logic App managed identity, ensures detailed webhook action group (`AVD-Alerts-Detailed`), and automatically switches existing `AVD-Category-*` scheduled query alerts to detailed-only action group routing.
 
 3. `AzureRoles-precheck.ps1`
 Validates required RBAC permissions for deploying and maintaining the alert stack.
@@ -22,10 +22,11 @@ Posts a synthetic Azure Monitor common alert payload to validate the detailed we
 
 ## Run Order
 
-1. Start with `Azure-AVD-Alerts.ps1`.
-2. Optionally run `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1` for rich detailed emails.
-3. Optionally run `Send-AVD-Webhook-TestAlert.ps1` to validate callback processing.
-4. Use `AzureRoles-precheck.ps1` before deployment or role changes.
+1. Use `AzureRoles-precheck.ps1` before deployment or role changes.
+2. Preferred webhook-first path: run `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`.
+3. The webhook script auto-creates missing `AVD-Category-*` alerts via `Azure-AVD-Alerts.ps1` (if needed), then switches routing to detailed-only.
+4. Optional baseline-first path: run `Azure-AVD-Alerts.ps1` before webhook deployment.
+5. Optionally run `Send-AVD-Webhook-TestAlert.ps1` to validate callback processing.
 
 ## Dependency Diagram
 
@@ -43,6 +44,8 @@ flowchart TD
     D[Deploy-AVD-AlertWebhook-LogicApp-v2.ps1] --> LA
     D --> AG2
     D --> O365
+    D -.bootstrap if missing.-> R
+    D --> SQ
 
     T[Send-AVD-Webhook-TestAlert.ps1] --> LA
 ```
@@ -66,15 +69,19 @@ sequenceDiagram
   Eng->>Pre: Validate required RBAC
   Pre-->>Eng: PASS or FAIL report
 
-  Eng->>Dep: Deploy detailed notifier
+  Eng->>Dep: Run webhook-first deployment
   Dep->>LA: Deploy or update workflow
   Dep->>Dep: Ensure Office365 connection
   Dep->>LAW: Assign Log Analytics Reader to Logic App MI
   Dep->>AGD: Ensure webhook receiver points to callback URL
-  Dep-->>Eng: Callback URL ready
+  Dep->>Mon: Check whether AVD-Category alerts exist
+  alt Missing category alerts
+    Dep->>Core: Invoke Azure-AVD-Alerts.ps1 (DetailedOnly bootstrap)
+    Core->>Mon: Create missing AVD-Category alerts
+  end
+  Dep->>Mon: Set action groups to AVD-Alerts-Detailed only
+  Dep-->>Eng: Webhook + alert routing ready
 
-  Eng->>Core: Create or update AVD-Category alerts
-  Core->>Mon: Configure scheduled query rules
   Mon->>AGD: Fire webhook notification on match
   AGD->>LA: Invoke callback URL with alert payload
   LA->>LAW: Query WVDErrors for alert window
@@ -91,6 +98,7 @@ sequenceDiagram
 - Azure CLI `scheduled-query` extension available
 - Target Log Analytics workspace receiving AVD diagnostics
 - Required RBAC on target subscription/resource groups/workspace
+- For webhook email delivery: authorize the Office 365 API connection (for example, `avd-alerts-office365`) in Azure Portal using valid mailbox credentials
 
 ## Minimum RBAC / Roles
 
@@ -105,24 +113,21 @@ sequenceDiagram
 
 | Script | Azure Resources Changed | External Calls | Local Files |
 |---|---|---|---|
-| `Azure-AVD-Alerts.ps1` | Creates/updates `AVD-Category-*` scheduled query rules, ensures `AVD-Alerts`, optionally ensures `AVD-Alerts-Detailed` on existing alerts | Azure control plane via `az` | Writes CSV report (`avd-alerts-report*.csv`) |
-| `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1` | Creates/updates Logic App `AVD-alert-details`, ensures `Microsoft.Web/connections` (Office365), ensures `AVD-Alerts-Detailed` receiver, role assignment to LAW | Azure control plane; Logic App runtime calls Log Analytics and Office365 connector | Temporary deployment JSON in OS temp path (cleaned up) |
+| `Azure-AVD-Alerts.ps1` | Creates/updates `AVD-Category-*` scheduled query rules, ensures `AVD-Alerts` (unless `-DetailedOnly`), ensures/uses `AVD-Alerts-Detailed` when configured | Azure control plane via `az` | Writes CSV report (`avd-alerts-report*.csv`) |
+| `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1` | Creates/updates Logic App `AVD-alert-details`, ensures `Microsoft.Web/connections` (Office365), ensures `AVD-Alerts-Detailed` receiver, assigns role to LAW MI, bootstraps missing `AVD-Category-*` alerts, and switches those alerts to detailed-only action group routing | Azure control plane; Logic App runtime calls Log Analytics and Office365 connector | Temporary deployment JSON in OS temp path (cleaned up) |
 | `AzureRoles-precheck.ps1` | No persistent resource changes | Azure control plane reads role assignments/definitions | No local output by default |
 | `Send-AVD-Webhook-TestAlert.ps1` | No persistent resource changes | Posts sample payload to Logic App callback URL | No persistent local output |
 
 ## Sample Usage
 
-### 1) Core Alerts (Run First)
+### Option 1) Rich Alerts via Webhook + Logic App (Webhook-First Single Script)
 
-```powershell
-pwsh -NoProfile -File .\Azure-AVD-Alerts.ps1 `
-  -EmailTo "alerts@contoso.com" `
-  -ResourceGroup "rg-avd-prod" `
-  -LawName "law-avd-prod" `
-  -Location "eastus2"
-```
+This command deploys/updates the Logic App webhook flow, auto-creates missing `AVD-Category-*` alerts when needed, and enforces detailed-only routing.
 
-### 2) Detailed Email Notifier (Optional)
+Steps:
+
+1. Run `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`.
+2. The script deploys webhook infrastructure, bootstraps missing `AVD-Category-*` alerts, and switches them to detailed-only action group routing.
 
 ```powershell
 pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 `
@@ -133,11 +138,66 @@ pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 `
   -WorkspaceName "law-avd-prod" `
   -WorkspaceResourceGroupName "rg-avd-prod" `
   -SendFromEmail "alerts@contoso.com" `
-  -SendToEmail "avd-oncall@contoso.com" `
+  -SendToEmails @("avd-oncall@contoso.com", "avd-manager@contoso.com") `
   -Office365ConnectionName "avd-alerts-office365"
 ```
 
-### 3) RBAC Precheck (Recommended)
+Notes:
+
+- ATTENTION: `avd-alerts-office365` (or your chosen `-Office365ConnectionName`) must be authorized in Azure Portal using valid email credentials before detailed emails will send.
+- Preferred: use `-SendToEmails` for multiple recipients.
+- `-WorkspaceResourceGroupName` can differ from `-ResourceGroupName` if LAW lives in a separate RG.
+
+### Option 2) Native Alerts First, Then Optional Webhook Cutover
+
+Use this path if you want to start with native alert emails and add webhook-based rich alerts later.
+
+Steps:
+
+1. Deploy native alerts with `Azure-AVD-Alerts.ps1`.
+2. Later, run `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1` to add webhook-based rich alerts and apply detailed-only routing.
+
+Step 1 command:
+
+```powershell
+pwsh -NoProfile -File .\Azure-AVD-Alerts.ps1 `
+  -EmailTo "alerts@contoso.com" `
+  -ResourceGroup "rg-avd-prod" `
+  -LawName "law-avd-prod" `
+  -Location "eastus2"
+```
+
+Step 2 command:
+
+```powershell
+pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 `
+  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+  -ResourceGroupName "rg-avd-prod" `
+  -LogicAppName "AVD-alert-details" `
+  -Location "eastus2" `
+  -WorkspaceName "law-avd-prod" `
+  -WorkspaceResourceGroupName "rg-avd-prod" `
+  -SendFromEmail "alerts@contoso.com" `
+  -SendToEmails @("avd-oncall@contoso.com", "avd-manager@contoso.com") `
+  -Office365ConnectionName "avd-alerts-office365"
+```
+
+### Optional) Enforce Detailed-Only Routing From Core Script
+
+Use this after detailed webhook deployment when you want `AVD-Category-*` alerts to attach only `AVD-Alerts-Detailed`.
+
+```powershell
+pwsh -NoProfile -File .\Azure-AVD-Alerts.ps1 `
+  -ResourceGroup "rg-avd-prod" `
+  -LawName "law-avd-prod" `
+  -Location "eastus2" `
+  -DetailedOnly `
+  -DetailedActionGroupName "AVD-Alerts-Detailed"
+```
+
+If the detailed action group does not already exist, include `-DetailedResultsWebhookUrl` so the script can create/configure it.
+
+### RBAC Precheck (Recommended)
 
 ```powershell
 pwsh -NoProfile -File .\AzureRoles-precheck.ps1 `
@@ -148,7 +208,7 @@ pwsh -NoProfile -File .\AzureRoles-precheck.ps1 `
   -RequireRoleAssignmentWrite
 ```
 
-### 4) Test Payload Sender (Optional)
+### Test Payload Sender (Optional)
 
 ```powershell
 pwsh -NoProfile -File .\Send-AVD-Webhook-TestAlert.ps1 `
@@ -158,9 +218,10 @@ pwsh -NoProfile -File .\Send-AVD-Webhook-TestAlert.ps1 `
 
 ## Recommended Rollout Paths
 
-1. Baseline only: run `Azure-AVD-Alerts.ps1`.
-2. Baseline + rich email: run `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`, then run `Azure-AVD-Alerts.ps1` with detailed webhook attached (or re-run to ensure action groups are attached).
-3. Post-change validation: run `Send-AVD-Webhook-TestAlert.ps1` after webhook deployment/update.
+1. Option 1 (recommended): run webhook-first single script `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`.
+2. Option 2: run native alerts first with `Azure-AVD-Alerts.ps1`, then add webhook-based rich alerts with `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`.
+3. Optional manual cutover path: run `Azure-AVD-Alerts.ps1 -DetailedOnly` to enforce detailed-only routing from the core script.
+4. Post-change validation: run `Send-AVD-Webhook-TestAlert.ps1` after webhook deployment/update.
 
 ## AVD Alert Categories
 
