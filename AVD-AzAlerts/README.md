@@ -11,7 +11,7 @@ These scripts are designed to *complement Azure Virtual Desktop Insights* by add
 1. `Azure-AVD-Alerts.ps1`
 Creates and maintains core `AVD-Category-*` scheduled query alerts and the primary email action group (`AVD-Alerts`).
 
-2. `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`
+2. `Deploy-AVD-AlertWebhook-LogicApp.ps1`
 Deploys/updates the detailed email Logic App (`AVD-alert-details`), ensures Office365 API connection exists, assigns Log Analytics Reader to Logic App managed identity, ensures detailed webhook action group (`AVD-Alerts-Detailed`), and automatically switches existing `AVD-Category-*` scheduled query alerts to detailed-only action group routing.
 
 3. `AzureRoles-precheck.ps1`
@@ -23,7 +23,7 @@ Posts a synthetic Azure Monitor common alert payload to validate the detailed we
 ## Run Order
 
 1. Use `AzureRoles-precheck.ps1` before deployment or role changes.
-2. Preferred webhook-first path: run `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`.
+2. Preferred webhook-first path: run `Deploy-AVD-AlertWebhook-LogicApp.ps1`.
 3. The webhook script auto-creates missing `AVD-Category-*` alerts via `Azure-AVD-Alerts.ps1` (if needed), then switches routing to detailed-only.
 4. Optional baseline-first path: run `Azure-AVD-Alerts.ps1` before webhook deployment.
 5. Optionally run `Send-AVD-Webhook-TestAlert.ps1` to validate callback processing.
@@ -41,7 +41,7 @@ flowchart TD
     LA --> O365[Office365 API Connection]
     O365 --> M[Detailed Email Delivery]
 
-    D[Deploy-AVD-AlertWebhook-LogicApp-v2.ps1] --> LA
+    D[Deploy-AVD-AlertWebhook-LogicApp.ps1] --> LA
     D --> AG2
     D --> O365
     D -.bootstrap if missing.-> R
@@ -57,7 +57,7 @@ sequenceDiagram
   autonumber
   actor Eng as Engineer
   participant Pre as AzureRoles-precheck.ps1
-  participant Dep as Deploy-AVD-AlertWebhook-LogicApp-v2.ps1
+  participant Dep as Deploy-AVD-AlertWebhook-LogicApp.ps1
   participant Core as Azure-AVD-Alerts.ps1
   participant Mon as Azure Monitor Scheduled Query Rules
   participant AGD as AVD-Alerts-Detailed Action Group
@@ -102,21 +102,21 @@ sequenceDiagram
 
 ## Minimum RBAC / Roles
 
-| Script | Minimum RBAC / Role | Notes |
-|---|---|---|
-| `Azure-AVD-Alerts.ps1` | `Monitoring Contributor` on target resource group + workspace read access | Creates/updates scheduled query alerts and action groups. |
-| `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1` | `Contributor` on target resource group; ability to assign role at LAW scope when needed | Deploys Logic App, manages Office365 connection/action group, assigns `Log Analytics Reader` to Logic App MI. |
-| `AzureRoles-precheck.ps1` | Read access to role assignments/role definitions in relevant scopes | Evaluates required Azure actions across scopes. |
-| `Send-AVD-Webhook-TestAlert.ps1` | `Logic App Contributor` (or `Contributor`) on target resource group | Resolves callback URL and invokes test payload. |
+| Script | Minimum RBAC / Role | Identity / Principal Impact | Notes |
+|---|---|---|---|
+| `Azure-AVD-Alerts.ps1` | `Monitoring Contributor` on target resource group + workspace read access | No new identity or principal is created. | Creates/updates scheduled query alerts and action groups. |
+| `Deploy-AVD-AlertWebhook-LogicApp.ps1` | `Contributor` on target resource group, plus permission to assign roles at LAW scope (`User Access Administrator` or `Owner`, or equivalent `Microsoft.Authorization/roleAssignments/write`) | Creates/enables Logic App **system-assigned managed identity** (service principal in Entra ID) and creates/updates a role assignment for it. | Deploys Logic App, manages Office365 connection/action group, assigns `Log Analytics Reader` to Logic App MI. |
+| `AzureRoles-precheck.ps1` | Read access to role assignments/role definitions in relevant scopes | No new identity or principal is created. | Evaluates required Azure actions across scopes. |
+| `Send-AVD-Webhook-TestAlert.ps1` | `Logic App Contributor` (or `Contributor`) on target resource group | No new identity or principal is created. | Resolves callback URL and invokes test payload. |
 
 ## What Each Script Changes
 
-| Script | Azure Resources Changed | External Calls | Local Files |
-|---|---|---|---|
-| `Azure-AVD-Alerts.ps1` | Creates/updates `AVD-Category-*` scheduled query rules, ensures `AVD-Alerts` (unless `-DetailedOnly`), ensures/uses `AVD-Alerts-Detailed` when configured | Azure control plane via `az` | Writes CSV report (`avd-alerts-report*.csv`) |
-| `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1` | Creates/updates Logic App `AVD-alert-details`, ensures `Microsoft.Web/connections` (Office365), ensures `AVD-Alerts-Detailed` receiver, assigns role to LAW MI, bootstraps missing `AVD-Category-*` alerts, and switches those alerts to detailed-only action group routing | Azure control plane; Logic App runtime calls Log Analytics and Office365 connector | Temporary deployment JSON in OS temp path (cleaned up) |
-| `AzureRoles-precheck.ps1` | No persistent resource changes | Azure control plane reads role assignments/definitions | No local output by default |
-| `Send-AVD-Webhook-TestAlert.ps1` | No persistent resource changes | Posts sample payload to Logic App callback URL | No persistent local output |
+| Script | Azure Resources Changed | Identity / Principal Changes | External Calls | Local Files |
+|---|---|---|---|---|
+| `Azure-AVD-Alerts.ps1` | Creates/updates `AVD-Category-*` scheduled query rules, ensures `AVD-Alerts` (unless `-DetailedOnly`), ensures/uses `AVD-Alerts-Detailed` when configured | None. No managed identity, app registration, or principal is created. | Azure control plane via `az` | Writes CSV report (`avd-alerts-report*.csv`) |
+| `Deploy-AVD-AlertWebhook-LogicApp.ps1` | Creates/updates Logic App `AVD-alert-details`, ensures `Microsoft.Web/connections` (Office365), ensures `AVD-Alerts-Detailed` receiver, bootstraps missing `AVD-Category-*` alerts, and switches those alerts to detailed-only action group routing | Enables/creates Logic App system-assigned managed identity and creates/updates its `Log Analytics Reader` role assignment at workspace scope. | Azure control plane; Logic App runtime calls Log Analytics and Office365 connector | Temporary deployment JSON in OS temp path (cleaned up) |
+| `AzureRoles-precheck.ps1` | No persistent resource changes | None. Read-only permission evaluation. | Azure control plane reads role assignments/definitions | No local output by default |
+| `Send-AVD-Webhook-TestAlert.ps1` | No persistent resource changes | None. Does not create identities or role assignments. | Posts sample payload to Logic App callback URL | No persistent local output |
 
 ## Sample Usage
 
@@ -126,11 +126,11 @@ This command deploys/updates the Logic App webhook flow, auto-creates missing `A
 
 Steps:
 
-1. Run `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`.
+1. Run `Deploy-AVD-AlertWebhook-LogicApp.ps1`.
 2. The script deploys webhook infrastructure, bootstraps missing `AVD-Category-*` alerts, and switches them to detailed-only action group routing.
 
 ```powershell
-pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 `
+pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
   -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
   -ResourceGroupName "rg-avd-prod" `
   -LogicAppName "AVD-alert-details" `
@@ -155,7 +155,7 @@ Use this path if you want to start with native alert emails and add webhook-base
 Steps:
 
 1. Deploy native alerts with `Azure-AVD-Alerts.ps1`.
-2. Later, run `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1` to add webhook-based rich alerts and apply detailed-only routing.
+2. Later, run `Deploy-AVD-AlertWebhook-LogicApp.ps1` to add webhook-based rich alerts and apply detailed-only routing.
 
 Step 1 command:
 
@@ -170,7 +170,7 @@ pwsh -NoProfile -File .\Azure-AVD-Alerts.ps1 `
 Step 2 command:
 
 ```powershell
-pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 `
+pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
   -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
   -ResourceGroupName "rg-avd-prod" `
   -LogicAppName "AVD-alert-details" `
@@ -218,8 +218,8 @@ pwsh -NoProfile -File .\Send-AVD-Webhook-TestAlert.ps1 `
 
 ## Recommended Rollout Paths
 
-1. Option 1 (recommended): run webhook-first single script `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`.
-2. Option 2: run native alerts first with `Azure-AVD-Alerts.ps1`, then add webhook-based rich alerts with `Deploy-AVD-AlertWebhook-LogicApp-v2.ps1`.
+1. Option 1 (recommended): run webhook-first single script `Deploy-AVD-AlertWebhook-LogicApp.ps1`.
+2. Option 2: run native alerts first with `Azure-AVD-Alerts.ps1`, then add webhook-based rich alerts with `Deploy-AVD-AlertWebhook-LogicApp.ps1`.
 3. Optional manual cutover path: run `Azure-AVD-Alerts.ps1 -DetailedOnly` to enforce detailed-only routing from the core script.
 4. Post-change validation: run `Send-AVD-Webhook-TestAlert.ps1` after webhook deployment/update.
 

@@ -14,6 +14,8 @@ param(
     [string]$Assignee,
     [string]$AssigneeObjectId,
 
+    [string]$CsvPath,
+
     [switch]$RequireResourceGroupCreate,
     [switch]$RequireRoleAssignmentWrite
 )
@@ -292,24 +294,30 @@ Write-Host "Workspace assignments found: $(@($workspaceAssignments).Count)"
 Write-Host "Subscription assignments found: $(@($subscriptionAssignments).Count)"
 
 Write-Section 'Permission Checks'
+
+if ([string]::IsNullOrWhiteSpace($CsvPath)) {
+    $subPrefix = if ($SubscriptionId.Length -ge 8) { $SubscriptionId.Substring(0, 8) } else { $SubscriptionId }
+    $CsvPath = ".\\avd-roles-precheck-report-$subPrefix.csv"
+}
+
 $checks = @(
-    [pscustomobject]@{ ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/read'; Why = 'Read action groups' },
-    [pscustomobject]@{ ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/write'; Why = 'Create/update action groups' },
-    [pscustomobject]@{ ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/read'; Why = 'Read scheduled query alerts' },
-    [pscustomobject]@{ ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/write'; Why = 'Create/update scheduled query alerts' },
-    [pscustomobject]@{ ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/read'; Why = 'Read Logic App workflow' },
-    [pscustomobject]@{ ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/write'; Why = 'Deploy/update Logic App workflow' },
-    [pscustomobject]@{ ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Web/connections/read'; Why = 'Read API connections' },
-    [pscustomobject]@{ ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Web/connections/write'; Why = 'Create/update Office 365 connection' },
-    [pscustomobject]@{ ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.OperationalInsights/workspaces/read'; Why = 'Resolve workspace details' }
+    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/read'; Why = 'Read action groups'; RolesTestedFor = 'Owner, Contributor, Monitoring Contributor' },
+    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/write'; Why = 'Create/update action groups'; RolesTestedFor = 'Owner, Contributor, Monitoring Contributor' },
+    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/read'; Why = 'Read scheduled query alerts'; RolesTestedFor = 'Owner, Contributor, Monitoring Contributor' },
+    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/write'; Why = 'Create/update scheduled query alerts'; RolesTestedFor = 'Owner, Contributor, Monitoring Contributor' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1, Send-AVD-Webhook-TestAlert.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/read'; Why = 'Read Logic App workflow'; RolesTestedFor = 'Owner, Contributor, Logic App Contributor' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/write'; Why = 'Deploy/update Logic App workflow'; RolesTestedFor = 'Owner, Contributor, Logic App Contributor' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Web/connections/read'; Why = 'Read API connections'; RolesTestedFor = 'Owner, Contributor' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Web/connections/write'; Why = 'Create/update Office 365 connection'; RolesTestedFor = 'Owner, Contributor' },
+    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.OperationalInsights/workspaces/read'; Why = 'Resolve workspace details'; RolesTestedFor = 'Owner, Contributor, Log Analytics Reader, Log Analytics Contributor' }
 )
 
 if ($RequireResourceGroupCreate) {
-    $checks += [pscustomobject]@{ ScopeName = 'Subscription'; Scope = $subscriptionScope; Action = 'Microsoft.Resources/subscriptions/resourceGroups/write'; Why = 'Create resource group if missing' }
+    $checks += [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Subscription'; Scope = $subscriptionScope; Action = 'Microsoft.Resources/subscriptions/resourceGroups/write'; Why = 'Create resource group if missing'; RolesTestedFor = 'Owner, Contributor' }
 }
 
 if ($RequireRoleAssignmentWrite) {
-    $checks += [pscustomobject]@{ ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.Authorization/roleAssignments/write'; Why = 'Assign Log Analytics Reader to Logic App MI' }
+    $checks += [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.Authorization/roleAssignments/write'; Why = 'Assign Log Analytics Reader to Logic App MI'; RolesTestedFor = 'Owner, User Access Administrator' }
 }
 
 $results = @()
@@ -323,14 +331,29 @@ foreach ($check in $checks) {
 
     $granted = Test-ActionGranted -Action $check.Action -PermissionSets $permSets
     $results += [pscustomobject]@{
+        Script = $check.Script
         Scope = $check.ScopeName
         Action = $check.Action
         Purpose = $check.Why
+        RolesTestedFor = $check.RolesTestedFor
         Granted = $granted
     }
 }
 
-$results | Format-Table -AutoSize
+$results | Format-Table Script, Scope, Action, Purpose, RolesTestedFor, Granted -AutoSize -Wrap
+
+try {
+    $csvDirectory = Split-Path -Path $CsvPath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($csvDirectory) -and -not (Test-Path -Path $csvDirectory)) {
+        New-Item -Path $csvDirectory -ItemType Directory -Force | Out-Null
+    }
+
+    $results | Export-Csv -Path $CsvPath -NoTypeInformation -Force
+    Write-Host "CSV report written: $CsvPath" -ForegroundColor Green
+}
+catch {
+    Write-Warning "Failed to write CSV report to '$CsvPath': $($_.Exception.Message)"
+}
 
 $missing = @($results | Where-Object { -not $_.Granted })
 Write-Host ""

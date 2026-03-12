@@ -55,8 +55,12 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
 .PARAMETER UseHardCodedDefaults
     Uses values from the internal $HardCoded map when provided.
 
+.PARAMETER CsvPath
+    Optional output path for post-run CSV summary report.
+    If omitted, defaults to .\avd-webhook-deploy-report-<subscriptionPrefix>.csv.
+
 .EXAMPLE
-    .\Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 `
+    .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
       -SubscriptionId "305f553d-016a-4e67-8701-47488e7b1437" `
       -ResourceGroupName "az-infra-eus2" `
       -LogicAppName "AVD-alert-details" `
@@ -70,7 +74,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     Deploy webhook-based detailed notifications using a single recipient.
 
 .EXAMPLE
-    .\Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 `
+    .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
       -SubscriptionId "305f553d-016a-4e67-8701-47488e7b1437" `
       -ResourceGroupName "az-infra-eus2" `
       -LogicAppName "AVD-alert-details" `
@@ -110,11 +114,13 @@ param(
     [string]$Office365ConnectionName = "office365",
     [string]$DetailedActionGroupName = "AVD-Alerts-Detailed",
     [string]$DetailedWebhookReceiverName = "AVDAlertsDetailedWebhook",
+    [string]$CsvPath = "",
     [hashtable]$Tags = @{},
     [switch]$UseHardCodedDefaults
 )
 
 $ErrorActionPreference = "Stop"
+$ScriptStartTime = Get-Date
 
 # =========================
 # OPTIONAL HARDCODED DEFAULTS
@@ -500,6 +506,14 @@ if (-not $Tags) {
     $Tags = @{}
 }
 
+if ([string]::IsNullOrWhiteSpace($CsvPath)) {
+    $subPrefix = if ($SubscriptionId.Length -ge 8) { $SubscriptionId.Substring(0, 8) } else { $SubscriptionId }
+    $CsvPath = ".\\avd-webhook-deploy-report-$subPrefix.csv"
+}
+
+$Office365ConnectionStatus = "Unknown"
+$RoleAssignmentStatus = "Unknown"
+
 Write-Step "Checking Azure CLI login"
 & az account show | Out-Null
 if ($LASTEXITCODE -ne 0) {
@@ -598,9 +612,11 @@ if ($existingConnectionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($existin
     }
 
     Write-Host "Office 365 connection '$Office365ConnectionName' created. Authorize it in Azure Portal if prompted."
+    $Office365ConnectionStatus = "Created"
 }
 else {
     Write-Host "Office 365 connection '$Office365ConnectionName' already exists."
+    $Office365ConnectionStatus = "Existing"
 }
 
 $defaultAlertDefinitionName = "AVD-Category-DefaultFallback"
@@ -1182,9 +1198,11 @@ Write-Step "Assigning Log Analytics Reader to Logic App managed identity"
 
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "Role assignment may already exist or could not be created automatically. Verify that the Logic App managed identity has 'Log Analytics Reader' on: $WorkspaceResourceId"
+    $RoleAssignmentStatus = "NeedsVerification"
 }
 else {
     Write-Host "Role assignment created successfully."
+    $RoleAssignmentStatus = "CreatedOrExists"
 }
 
 Write-Step "Retrieving webhook URL"
@@ -1242,3 +1260,48 @@ Write-Host "4. If no rule name matches, the script uses the fallback WVDErrors q
 Write-Host "5. Detailed webhook action group: $DetailedActionGroupName ($DetailedWebhookReceiverName)"
 Write-Host "6. If AVD-Category alerts were missing, they were auto-created via Azure-AVD-Alerts.ps1 in detailed-only mode."
 Write-Host "7. Existing AVD-Category alerts were switched to detailed-only action group routing."
+
+$ScriptEndTime = Get-Date
+$ExecutionSeconds = [Math]::Round(($ScriptEndTime - $ScriptStartTime).TotalSeconds, 1)
+$IdentityChange = if ([string]::IsNullOrWhiteSpace($principalId)) {
+    "Unknown"
+}
+else {
+    "LogicAppSystemAssignedManagedIdentity"
+}
+
+$reportRows = @(
+    [pscustomobject]@{
+        TimestampUtc = (Get-Date).ToUniversalTime().ToString("o")
+        SubscriptionId = $SubscriptionId
+        ResourceGroupName = $ResourceGroupName
+        LogicAppName = $LogicAppName
+        Location = $Location
+        WorkspaceName = $WorkspaceName
+        WorkspaceResourceGroupName = $WorkspaceResourceGroupName
+        DetailedActionGroupName = $DetailedActionGroupName
+        DetailedWebhookReceiverName = $DetailedWebhookReceiverName
+        SendFromEmail = $SendFromEmail
+        SendToRecipients = $SendToEmailValue
+        WebhookUrl = $callbackValue
+        LogicAppPrincipalId = $principalId
+        IdentityChange = $IdentityChange
+        Office365ConnectionStatus = $Office365ConnectionStatus
+        RoleAssignmentStatus = $RoleAssignmentStatus
+        ExecutionSeconds = $ExecutionSeconds
+        Result = "Success"
+    }
+)
+
+try {
+    $csvDirectory = Split-Path -Path $CsvPath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($csvDirectory) -and -not (Test-Path -Path $csvDirectory)) {
+        New-Item -Path $csvDirectory -ItemType Directory -Force | Out-Null
+    }
+
+    $reportRows | Export-Csv -Path $CsvPath -NoTypeInformation -Force
+    Write-Host "CSV report written: $CsvPath" -ForegroundColor Green
+}
+catch {
+    Write-Warning "Failed to write CSV report to '$CsvPath': $($_.Exception.Message)"
+}
