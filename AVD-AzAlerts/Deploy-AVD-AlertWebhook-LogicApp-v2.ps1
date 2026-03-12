@@ -13,6 +13,76 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     validates and authorizes required API connections, and configures alert routing so
     AVD category alerts send detailed notifications through the webhook path.
 
+.PARAMETER SubscriptionId
+    Azure subscription ID to target. If omitted, uses the current Azure CLI context.
+
+.PARAMETER ResourceGroupName
+    Resource group where Logic App and related alert resources are deployed.
+
+.PARAMETER LogicAppName
+    Name of the Logic App workflow used for detailed AVD alert notifications.
+
+.PARAMETER Location
+    Azure region for deployment (for example: eastus2).
+
+.PARAMETER WorkspaceName
+    Log Analytics workspace name used by the alert queries.
+
+.PARAMETER WorkspaceResourceGroupName
+    Resource group containing the Log Analytics workspace.
+
+.PARAMETER SendToEmails
+    One or more recipient email addresses for detailed notifications.
+
+.PARAMETER SendToEmail
+    Single recipient email address (legacy single-value option).
+
+.PARAMETER SendFromEmail
+    Sender mailbox address used by the Office 365 connection.
+
+.PARAMETER Office365ConnectionName
+    Existing API connection name for Office 365 (default: office365).
+
+.PARAMETER DetailedActionGroupName
+    Azure Monitor action group name for webhook-based detailed alerts.
+
+.PARAMETER DetailedWebhookReceiverName
+    Webhook receiver name created/updated inside the detailed action group.
+
+.PARAMETER Tags
+    Optional resource tags to apply to deployed resources.
+
+.PARAMETER UseHardCodedDefaults
+    Uses values from the internal $HardCoded map when provided.
+
+.EXAMPLE
+    .\Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 `
+      -SubscriptionId "305f553d-016a-4e67-8701-47488e7b1437" `
+      -ResourceGroupName "az-infra-eus2" `
+      -LogicAppName "AVD-alert-details" `
+      -Location "eastus2" `
+      -WorkspaceName "PrimaryLAW-Sub1" `
+      -WorkspaceResourceGroupName "az-infra-eus2" `
+      -SendToEmail "alerts@contoso.com" `
+      -SendFromEmail "alerts@contoso.com" `
+      -Office365ConnectionName "avd-alerts-office365"
+
+    Deploy webhook-based detailed notifications using a single recipient.
+
+.EXAMPLE
+    .\Deploy-AVD-AlertWebhook-LogicApp-v2.ps1 `
+      -SubscriptionId "305f553d-016a-4e67-8701-47488e7b1437" `
+      -ResourceGroupName "az-infra-eus2" `
+      -LogicAppName "AVD-alert-details" `
+      -Location "eastus2" `
+      -WorkspaceName "PrimaryLAW-Sub1" `
+      -WorkspaceResourceGroupName "az-infra-eus2" `
+      -SendToEmails "avdops@contoso.com","noc@contoso.com" `
+      -SendFromEmail "alerts@contoso.com" `
+      -Office365ConnectionName "avd-alerts-office365"
+
+    Deploy with multiple recipients using -SendToEmails.
+
 .NOTES
     Script function summary:
     - Deploys/updates Logic App workflow resources used for detailed alert notifications.
