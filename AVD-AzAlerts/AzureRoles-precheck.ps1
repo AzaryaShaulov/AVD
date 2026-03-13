@@ -15,23 +15,25 @@ param(
     [string]$AssigneeObjectId,
 
     [string]$CsvPath,
+    [string]$CustomRoleJsonPath,
 
     [switch]$RequireResourceGroupCreate,
-    [switch]$RequireRoleAssignmentWrite
+    [switch]$RequireRoleAssignmentWrite,
+    [switch]$EmitCustomRoleJson
 )
 
 $ErrorActionPreference = 'Stop'
 
 function Write-Section {
     param([string]$Message)
-    Write-Host "`n=== $Message ===" -ForegroundColor Cyan
+    Write-Output "`n=== $Message ==="
 }
 
 function Invoke-AzCliJson {
-    param([Parameter(Mandatory = $true)][string[]]$Arguments)
-    $result = & az @Arguments 2>&1
+    param([Parameter(Mandatory = $true)][string[]]$CliArguments)
+    $result = & az @CliArguments 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI command failed: az $($Arguments -join ' ')`n$result"
+        throw "Azure CLI command failed: az $($CliArguments -join ' ')`n$result"
     }
     $text = ($result | Out-String).Trim()
     if ([string]::IsNullOrWhiteSpace($text)) {
@@ -41,10 +43,10 @@ function Invoke-AzCliJson {
 }
 
 function Invoke-AzCliText {
-    param([Parameter(Mandatory = $true)][string[]]$Arguments)
-    $result = & az @Arguments 2>&1
+    param([Parameter(Mandatory = $true)][string[]]$CliArguments)
+    $result = & az @CliArguments 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI command failed: az $($Arguments -join ' ')`n$result"
+        throw "Azure CLI command failed: az $($CliArguments -join ' ')`n$result"
     }
     return ($result | Out-String).Trim()
 }
@@ -80,24 +82,24 @@ function Resolve-Principal {
 
         if ([string]::IsNullOrWhiteSpace($principalObjectId) -and -not [string]::IsNullOrWhiteSpace($Assignee)) {
             try {
-                $principalObjectId = Invoke-AzCliText -Arguments @('ad', 'user', 'show', '--id', $Assignee, '--query', 'id', '-o', 'tsv')
+                $principalObjectId = Invoke-AzCliText -CliArguments @('ad', 'user', 'show', '--id', $Assignee, '--query', 'id', '-o', 'tsv')
                 if (-not [string]::IsNullOrWhiteSpace($principalObjectId)) {
                     $principalType = 'user'
                 }
             }
             catch {
-                # Try service principal resolution next.
+                Write-Verbose "Could not resolve assignee '$Assignee' as user: $($_.Exception.Message)"
             }
 
             if ([string]::IsNullOrWhiteSpace($principalObjectId)) {
                 try {
-                    $principalObjectId = Invoke-AzCliText -Arguments @('ad', 'sp', 'show', '--id', $Assignee, '--query', 'id', '-o', 'tsv')
+                    $principalObjectId = Invoke-AzCliText -CliArguments @('ad', 'sp', 'show', '--id', $Assignee, '--query', 'id', '-o', 'tsv')
                     if (-not [string]::IsNullOrWhiteSpace($principalObjectId)) {
                         $principalType = 'servicePrincipal'
                     }
                 }
                 catch {
-                    # Fallback to assignee string if object lookup is unavailable.
+                    Write-Verbose "Could not resolve assignee '$Assignee' as service principal: $($_.Exception.Message)"
                 }
             }
         }
@@ -119,18 +121,18 @@ function Resolve-Principal {
 
     if ($principalType -eq 'user') {
         try {
-            $principalObjectId = Invoke-AzCliText -Arguments @('ad', 'signed-in-user', 'show', '--query', 'id', '-o', 'tsv')
+            $principalObjectId = Invoke-AzCliText -CliArguments @('ad', 'signed-in-user', 'show', '--query', 'id', '-o', 'tsv')
         }
         catch {
-            # Fallback to assignee by UPN if Graph lookup fails.
+            Write-Verbose "Could not resolve signed-in user object id: $($_.Exception.Message)"
         }
     }
     elseif ($principalType -eq 'servicePrincipal') {
         try {
-            $principalObjectId = Invoke-AzCliText -Arguments @('ad', 'sp', 'show', '--id', $principalName, '--query', 'id', '-o', 'tsv')
+            $principalObjectId = Invoke-AzCliText -CliArguments @('ad', 'sp', 'show', '--id', $principalName, '--query', 'id', '-o', 'tsv')
         }
         catch {
-            # Fallback to assignee by appId/name if Graph lookup fails.
+            Write-Verbose "Could not resolve service principal object id for '$principalName': $($_.Exception.Message)"
         }
     }
 
@@ -147,25 +149,30 @@ function Get-RoleAssignmentsForScope {
         [Parameter(Mandatory = $true)][psobject]$Principal
     )
 
-    $args = @('role', 'assignment', 'list', '--scope', $Scope, '--include-inherited', '-o', 'json')
-    if (-not [string]::IsNullOrWhiteSpace($Principal.PrincipalObjectId)) {
-        $args += @('--assignee-object-id', $Principal.PrincipalObjectId)
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($Principal.PrincipalObjectId)) {
+            $parsed = Invoke-AzCliJson -CliArguments @(
+                'role', 'assignment', 'list',
+                '--scope', $Scope,
+                '--include-inherited',
+                '--assignee-object-id', $Principal.PrincipalObjectId,
+                '-o', 'json'
+            )
+        }
+        else {
+            $parsed = Invoke-AzCliJson -CliArguments @(
+                'role', 'assignment', 'list',
+                '--scope', $Scope,
+                '--include-inherited',
+                '--assignee', $Principal.PrincipalName,
+                '-o', 'json'
+            )
+        }
     }
-    else {
-        $args += @('--assignee', $Principal.PrincipalName)
+    catch {
+        throw "Could not list role assignments at scope '$Scope'. Ensure you can read RBAC assignments on this scope.`n$($_.Exception.Message)"
     }
 
-    $result = & az @args 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not list role assignments at scope '$Scope'. Ensure you can read RBAC assignments on this scope.`n$result"
-    }
-
-    $text = ($result | Out-String).Trim()
-    if ([string]::IsNullOrWhiteSpace($text)) {
-        return @()
-    }
-
-    $parsed = $text | ConvertFrom-Json
     if ($null -eq $parsed) {
         return @()
     }
@@ -173,13 +180,17 @@ function Get-RoleAssignmentsForScope {
     return @($parsed)
 }
 
-function Get-RolePermissionSets {
+function Get-RolePermissionSet {
     param(
-        [Parameter(Mandatory = $true)][array]$RoleAssignments,
+        [array]$RoleAssignments,
         [Parameter(Mandatory = $true)][hashtable]$RoleDefinitionCache
     )
 
     $permissionSets = @()
+
+    if ($null -eq $RoleAssignments -or @($RoleAssignments).Count -eq 0) {
+        return $permissionSets
+    }
 
     foreach ($assignment in $RoleAssignments) {
         $roleName = $assignment.roleDefinitionName
@@ -188,7 +199,7 @@ function Get-RolePermissionSets {
         }
 
         if (-not $RoleDefinitionCache.ContainsKey($roleName)) {
-            $def = Invoke-AzCliJson -Arguments @('role', 'definition', 'list', '--name', $roleName)
+            $def = Invoke-AzCliJson -CliArguments @('role', 'definition', 'list', '--name', $roleName)
             if ($def -and @($def).Count -gt 0) {
                 $RoleDefinitionCache[$roleName] = $def[0]
             }
@@ -254,44 +265,44 @@ if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
     throw "Azure CLI not found. Install from https://learn.microsoft.com/cli/azure/install-azure-cli"
 }
 
-$accountInfo = Invoke-AzCliJson -Arguments @('account', 'show')
+$accountInfo = Invoke-AzCliJson -CliArguments @('account', 'show')
 if ($null -eq $accountInfo) {
     throw "Not logged in. Run 'az login' first."
 }
 
-Invoke-AzCliText -Arguments @('account', 'set', '--subscription', $SubscriptionId, '-o', 'none') | Out-Null
-$accountInfo = Invoke-AzCliJson -Arguments @('account', 'show')
+Invoke-AzCliText -CliArguments @('account', 'set', '--subscription', $SubscriptionId, '-o', 'none') | Out-Null
+$accountInfo = Invoke-AzCliJson -CliArguments @('account', 'show')
 
 $principal = Resolve-Principal -AccountInfo $accountInfo -Assignee $Assignee -AssigneeObjectId $AssigneeObjectId
-Write-Host "Subscription: $($accountInfo.name) ($($accountInfo.id))"
-Write-Host "Principal: $($principal.PrincipalName) [$($principal.PrincipalType)]"
+Write-Output "Subscription: $($accountInfo.name) ($($accountInfo.id))"
+Write-Output "Principal: $($principal.PrincipalName) [$($principal.PrincipalType)]"
 
 Write-Section 'Resolve Scopes'
 $rgScope = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName"
-$workspace = Invoke-AzCliJson -Arguments @(
+$workspace = Invoke-AzCliJson -CliArguments @(
     'monitor', 'log-analytics', 'workspace', 'show',
     '--resource-group', $WorkspaceResourceGroupName,
     '--workspace-name', $WorkspaceName
 )
 $workspaceScope = $workspace.id
 
-Write-Host "Resource Group scope: $rgScope"
-Write-Host "Workspace scope: $workspaceScope"
+Write-Output "Resource Group scope: $rgScope"
+Write-Output "Workspace scope: $workspaceScope"
 
 Write-Section 'Collect Role Assignments'
 $roleDefinitionCache = @{}
-$rgAssignments = Get-RoleAssignmentsForScope -Scope $rgScope -Principal $principal
-$workspaceAssignments = Get-RoleAssignmentsForScope -Scope $workspaceScope -Principal $principal
+$rgAssignments = @(Get-RoleAssignmentsForScope -Scope $rgScope -Principal $principal)
+$workspaceAssignments = @(Get-RoleAssignmentsForScope -Scope $workspaceScope -Principal $principal)
 $subscriptionScope = "/subscriptions/$SubscriptionId"
-$subscriptionAssignments = Get-RoleAssignmentsForScope -Scope $subscriptionScope -Principal $principal
+$subscriptionAssignments = @(Get-RoleAssignmentsForScope -Scope $subscriptionScope -Principal $principal)
 
-$rgPermSets = Get-RolePermissionSets -RoleAssignments $rgAssignments -RoleDefinitionCache $roleDefinitionCache
-$workspacePermSets = Get-RolePermissionSets -RoleAssignments $workspaceAssignments -RoleDefinitionCache $roleDefinitionCache
-$subscriptionPermSets = Get-RolePermissionSets -RoleAssignments $subscriptionAssignments -RoleDefinitionCache $roleDefinitionCache
+$rgPermSets = Get-RolePermissionSet -RoleAssignments $rgAssignments -RoleDefinitionCache $roleDefinitionCache
+$workspacePermSets = Get-RolePermissionSet -RoleAssignments $workspaceAssignments -RoleDefinitionCache $roleDefinitionCache
+$subscriptionPermSets = Get-RolePermissionSet -RoleAssignments $subscriptionAssignments -RoleDefinitionCache $roleDefinitionCache
 
-Write-Host "RG assignments found: $(@($rgAssignments).Count)"
-Write-Host "Workspace assignments found: $(@($workspaceAssignments).Count)"
-Write-Host "Subscription assignments found: $(@($subscriptionAssignments).Count)"
+Write-Output "RG assignments found: $(@($rgAssignments).Count)"
+Write-Output "Workspace assignments found: $(@($workspaceAssignments).Count)"
+Write-Output "Subscription assignments found: $(@($subscriptionAssignments).Count)"
 
 Write-Section 'Permission Checks'
 
@@ -301,23 +312,23 @@ if ([string]::IsNullOrWhiteSpace($CsvPath)) {
 }
 
 $checks = @(
-    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/read'; Why = 'Read action groups'; RolesTestedFor = 'Owner, Contributor, Monitoring Contributor' },
-    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/write'; Why = 'Create/update action groups'; RolesTestedFor = 'Owner, Contributor, Monitoring Contributor' },
-    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/read'; Why = 'Read scheduled query alerts'; RolesTestedFor = 'Owner, Contributor, Monitoring Contributor' },
-    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/write'; Why = 'Create/update scheduled query alerts'; RolesTestedFor = 'Owner, Contributor, Monitoring Contributor' },
-    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1, Send-AVD-Webhook-TestAlert.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/read'; Why = 'Read Logic App workflow'; RolesTestedFor = 'Owner, Contributor, Logic App Contributor' },
-    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/write'; Why = 'Deploy/update Logic App workflow'; RolesTestedFor = 'Owner, Contributor, Logic App Contributor' },
-    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Web/connections/read'; Why = 'Read API connections'; RolesTestedFor = 'Owner, Contributor' },
-    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Web/connections/write'; Why = 'Create/update Office 365 connection'; RolesTestedFor = 'Owner, Contributor' },
-    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.OperationalInsights/workspaces/read'; Why = 'Resolve workspace details'; RolesTestedFor = 'Owner, Contributor, Log Analytics Reader, Log Analytics Contributor' }
+    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/read'; Why = 'Read action groups' },
+    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/write'; Why = 'Create/update action groups' },
+    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/read'; Why = 'Read scheduled query alerts' },
+    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/write'; Why = 'Create/update scheduled query alerts' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1, Send-AVD-Webhook-TestAlert.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/read'; Why = 'Read Logic App workflow' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/write'; Why = 'Deploy/update Logic App workflow' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Web/connections/read'; Why = 'Read API connections' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Web/connections/write'; Why = 'Create/update Office 365 connection' },
+    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.OperationalInsights/workspaces/read'; Why = 'Resolve workspace details' }
 )
 
 if ($RequireResourceGroupCreate) {
-    $checks += [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Subscription'; Scope = $subscriptionScope; Action = 'Microsoft.Resources/subscriptions/resourceGroups/write'; Why = 'Create resource group if missing'; RolesTestedFor = 'Owner, Contributor' }
+    $checks += [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Subscription'; Scope = $subscriptionScope; Action = 'Microsoft.Resources/subscriptions/resourceGroups/write'; Why = 'Create resource group if missing' }
 }
 
 if ($RequireRoleAssignmentWrite) {
-    $checks += [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.Authorization/roleAssignments/write'; Why = 'Assign Log Analytics Reader to Logic App MI'; RolesTestedFor = 'Owner, User Access Administrator' }
+    $checks += [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.Authorization/roleAssignments/write'; Why = 'Assign Log Analytics Reader to Logic App MI' }
 }
 
 $results = @()
@@ -333,14 +344,14 @@ foreach ($check in $checks) {
     $results += [pscustomobject]@{
         Script = $check.Script
         Scope = $check.ScopeName
+        ScopeId = $check.Scope
         Action = $check.Action
         Purpose = $check.Why
-        RolesTestedFor = $check.RolesTestedFor
         Granted = $granted
     }
 }
 
-$results | Format-Table Script, Scope, Action, Purpose, RolesTestedFor, Granted -AutoSize -Wrap
+$results | Format-Table Script, Scope, Action, Purpose, Granted -AutoSize -Wrap
 
 try {
     $csvDirectory = Split-Path -Path $CsvPath -Parent
@@ -349,33 +360,72 @@ try {
     }
 
     $results | Export-Csv -Path $CsvPath -NoTypeInformation -Force
-    Write-Host "CSV report written: $CsvPath" -ForegroundColor Green
+    Write-Output "CSV report written: $CsvPath"
 }
 catch {
     Write-Warning "Failed to write CSV report to '$CsvPath': $($_.Exception.Message)"
 }
 
+if ($EmitCustomRoleJson) {
+    if ([string]::IsNullOrWhiteSpace($CustomRoleJsonPath)) {
+        $subPrefix = if ($SubscriptionId.Length -ge 8) { $SubscriptionId.Substring(0, 8) } else { $SubscriptionId }
+        $CustomRoleJsonPath = ".\\avd-custom-rbac-actions-$subPrefix.json"
+    }
+
+    $byScope = @(
+        $results |
+            Group-Object { "$($_.Scope)|$($_.ScopeId)" } |
+            ForEach-Object {
+                $groupRows = $_.Group
+                $sample = $groupRows[0]
+                [pscustomobject]@{
+                    Scope = $sample.Scope
+                    ScopeId = $sample.ScopeId
+                    RequiredActions = @($groupRows.Action | Sort-Object -Unique)
+                    MissingActions = @($groupRows | Where-Object { -not $_.Granted } | Select-Object -ExpandProperty Action -Unique | Sort-Object)
+                }
+            }
+    )
+
+    $customRolePlan = [pscustomobject]@{
+        GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+        SubscriptionId = $SubscriptionId
+        PrincipalName = $principal.PrincipalName
+        PrincipalType = $principal.PrincipalType
+        PrincipalObjectId = $principal.PrincipalObjectId
+        Scopes = $byScope
+    }
+
+    try {
+        $jsonDirectory = Split-Path -Path $CustomRoleJsonPath -Parent
+        if (-not [string]::IsNullOrWhiteSpace($jsonDirectory) -and -not (Test-Path -Path $jsonDirectory)) {
+            New-Item -Path $jsonDirectory -ItemType Directory -Force | Out-Null
+        }
+
+        $customRolePlan | ConvertTo-Json -Depth 8 | Out-File -FilePath $CustomRoleJsonPath -Encoding utf8
+        Write-Output "Custom RBAC action manifest written: $CustomRoleJsonPath"
+    }
+    catch {
+        Write-Warning "Failed to write custom RBAC action manifest to '$CustomRoleJsonPath': $($_.Exception.Message)"
+    }
+}
+
 $missing = @($results | Where-Object { -not $_.Granted })
-Write-Host ""
+Write-Output ""
 if ($missing.Count -eq 0) {
-    Write-Host "PASS: principal appears to have all required permissions for AVD deployment scripts." -ForegroundColor Green
+    Write-Output "PASS: principal appears to have all required permissions for AVD deployment scripts."
     exit 0
 }
 
-Write-Host "FAIL: missing required permissions:" -ForegroundColor Red
+Write-Output "FAIL: missing required permissions:"
 $missing | ForEach-Object {
-    Write-Host "- [$($_.Scope)] $($_.Action) ($($_.Purpose))" -ForegroundColor Red
+    Write-Output "- [$($_.Scope)] $($_.Action) ($($_.Purpose))"
 }
 
-Write-Host ""
-Write-Host "Suggested minimum built-in roles (common baseline):" -ForegroundColor Yellow
-Write-Host "- Resource Group '$ResourceGroupName': Monitoring Contributor" -ForegroundColor Yellow
-Write-Host "- Workspace '$WorkspaceName': Log Analytics Reader" -ForegroundColor Yellow
-if ($RequireRoleAssignmentWrite) {
-    Write-Host "- Workspace scope: User Access Administrator (or Owner) for roleAssignments/write" -ForegroundColor Yellow
-}
-if ($RequireResourceGroupCreate) {
-    Write-Host "- Subscription scope: Contributor (or Owner) for resourceGroups/write" -ForegroundColor Yellow
+Write-Output ""
+Write-Output "Grant the missing action permissions via custom RBAC role(s) at the indicated scope(s):"
+$missing | ForEach-Object {
+    Write-Output "- [$($_.Scope)] $($_.Action)"
 }
 
 exit 2

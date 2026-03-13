@@ -347,6 +347,16 @@ function Ensure-AVDCategoryAlertsExist {
         [string]$DetailedResultsWebhookUrl
     )
 
+    # Guard: ensure scheduled-query extension is available before any az monitor scheduled-query calls
+    & az extension show --name scheduled-query -o none 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Installing 'scheduled-query' extension for bootstrap..." -ForegroundColor Yellow
+        & az extension add --name scheduled-query --yes -o none 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Required Azure CLI extension 'scheduled-query' could not be installed."
+        }
+    }
+
     $existingAlertNamesOutput = Invoke-AzCliText -Arguments @(
         "monitor", "scheduled-query", "list",
         "--resource-group", $ResourceGroupName,
@@ -524,6 +534,19 @@ Write-Step "Setting Azure subscription"
 & az account set --subscription $SubscriptionId
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to set Azure subscription to $SubscriptionId"
+}
+
+Write-Step "Ensuring required CLI extension: scheduled-query"
+& az extension show --name scheduled-query -o none 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Installing 'scheduled-query' extension..." -ForegroundColor Yellow
+    & az extension add --name scheduled-query --yes -o none 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Required Azure CLI extension 'scheduled-query' could not be installed."
+    }
+    Write-Host "'scheduled-query' extension installed." -ForegroundColor Green
+} else {
+    Write-Host "'scheduled-query' extension is available." -ForegroundColor Gray
 }
 
 Write-Step "Ensuring Logic App resource group exists"
