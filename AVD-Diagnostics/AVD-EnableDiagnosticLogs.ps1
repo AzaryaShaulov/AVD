@@ -13,8 +13,9 @@
 .PARAMETER WorkspaceName
   Name of the Log Analytics workspace. Defaults to "AVD-LAW".
 
-.PARAMETER WorkspaceResourceGroup
-  Resource group containing the Log Analytics workspace. Defaults to "az-infra-eus2".
+.PARAMETER WorkspaceResourceGroupName
+  Resource group containing the Log Analytics workspace. Defaults to "rg-avd-monitoring".
+  Alias: -WorkspaceResourceGroup (backward compatible).
 
 .PARAMETER DiagnosticSettingName
   Name for the diagnostic settings to create/update.
@@ -30,7 +31,7 @@
   Runs with specified subscription ID and default workspace values.
 
 .EXAMPLE
-  .\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID" -WorkspaceName "YourLAW" -WorkspaceResourceGroup "YourRG"
+  .\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID" -WorkspaceName "YourLAW" -WorkspaceResourceGroupName "YourRG"
   Override all default values with custom subscription and workspace.
 
 .EXAMPLE
@@ -46,6 +47,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [ValidateNotNullOrEmpty()]
+  [ValidatePattern('^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')]
   [string]$SubscriptionId,
 
   [Parameter(Mandatory = $false)]
@@ -54,7 +56,8 @@ param(
 
   [Parameter(Mandatory = $false)]
   [ValidateNotNullOrEmpty()]
-  [string]$WorkspaceResourceGroup = "az-infra-eus2",
+  [Alias('WorkspaceResourceGroup')]
+  [string]$WorkspaceResourceGroupName = "rg-avd-monitoring",
 
   [Parameter(Mandatory = $false)]
   [string]$DiagnosticSettingName = "AVD-Diagnostics",
@@ -226,14 +229,14 @@ try {
     if ([string]::IsNullOrWhiteSpace($WorkspaceName)) {
       throw "WorkspaceName is required when not using -CheckOnly mode"
     }
-    if ([string]::IsNullOrWhiteSpace($WorkspaceResourceGroup)) {
-      throw "WorkspaceResourceGroup is required when not using -CheckOnly mode"
+    if ([string]::IsNullOrWhiteSpace($WorkspaceResourceGroupName)) {
+      throw "WorkspaceResourceGroupName is required when not using -CheckOnly mode"
     }
   }
   
   Write-Log "Using Subscription: $SubscriptionId" "Gray"
   if (-not $CheckOnly) {
-    Write-Log "Using Workspace: $WorkspaceName (RG: $WorkspaceResourceGroup)" "Gray"
+    Write-Log "Using Workspace: $WorkspaceName (RG: $WorkspaceResourceGroupName)" "Gray"
   }
 
   # Check Azure CLI
@@ -253,7 +256,7 @@ try {
   if (-not $CheckOnly) {
     Write-Log "Getting Log Analytics Workspace ID..."
     $lawId = az monitor log-analytics workspace show `
-      -g $WorkspaceResourceGroup `
+      -g $WorkspaceResourceGroupName `
       -n $WorkspaceName `
       --subscription $SubscriptionId `
       --query id `
@@ -261,7 +264,7 @@ try {
       --only-show-errors 2>$null
 
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($lawId)) {
-      throw "Log Analytics Workspace '$WorkspaceName' not found in resource group '$WorkspaceResourceGroup'"
+      throw "Log Analytics Workspace '$WorkspaceName' not found in resource group '$WorkspaceResourceGroupName'"
     }
 
     Write-Log "LAW ID: $lawId" "Gray"

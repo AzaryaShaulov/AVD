@@ -135,36 +135,82 @@ Before running this script, ensure:
 
 ## Parameters
 
-| Parameter | Required | Default | Description |
-|-----------|----------|---------|-------------|
-| `SubscriptionId` | **Yes** | — | Azure subscription ID |
-| `WorkspaceName` | No | `AVD-LAW` | Log Analytics workspace name |
-| `WorkspaceResourceGroup` | No | `az-infra-eus2` | Resource group containing the workspace |
-| `DiagnosticSettingName` | No | `AVD-Diagnostics` | Name for diagnostic settings |
-| `CsvPath` | No | `avd-diagnostics-minimal.csv` (script directory) | Path for CSV export |
-| `CheckOnly` | No | (switch) | Check status without making changes |
+| Parameter | Required | Type | Default | Description |
+|-----------|----------|------|---------|-------------|
+| `-SubscriptionId` | **Yes** | `string` | — | Azure subscription ID (GUID format) |
+| `-WorkspaceName` | No | `string` | `AVD-LAW` | Log Analytics workspace name |
+| `-WorkspaceResourceGroupName` | No | `string` | `rg-avd-monitoring` | Resource group containing the workspace. Alias: `-WorkspaceResourceGroup` |
+| `-DiagnosticSettingName` | No | `string` | `AVD-Diagnostics` | Name for diagnostic settings created on each resource |
+| `-CsvPath` | No | `string` | `avd-diagnostics-minimal.csv` (script directory) | Output path for CSV status report |
+| `-CheckOnly` | No | `switch` | Off | Read-only mode — displays current diagnostic settings status without making any changes |
 
 ## Usage Examples
 
-### Check Current Status
-Review diagnostic settings without making any changes:
+### Basic — Enable Diagnostics with Defaults
+Discovers all AVD resources in the subscription and enables `allLogs` diagnostic settings pointing to the default workspace (`AVD-LAW` in `rg-avd-monitoring`):
 ```powershell
-.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID" -CheckOnly
+.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
 ```
 
-### Configure with Custom Workspace
-Apply diagnostic settings using a specific Log Analytics workspace:
+### Check-Only Mode (`-CheckOnly`)
+Review the current diagnostic settings status across all AVD resources **without making any changes**. Useful for auditing before a deployment or verifying after one:
 ```powershell
 .\AVD-EnableDiagnosticLogs.ps1 `
     -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-    -WorkspaceName "MyCustomLAW" `
-    -WorkspaceResourceGroup "MyResourceGroup"
+    -CheckOnly
+```
+Output shows per-resource status: `Enabled (allLogs)`, `Enabled (not allLogs)`, `Not Configured`, or `Disabled`.
+
+### Custom Workspace (`-WorkspaceName`, `-WorkspaceResourceGroupName`)
+Point diagnostics at a specific Log Analytics workspace in a different resource group:
+```powershell
+.\AVD-EnableDiagnosticLogs.ps1 `
+    -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+    -WorkspaceName "AVD-LogAnalytics" `
+    -WorkspaceResourceGroupName "rg-az-west2-avd-nonprod"
 ```
 
-### Run with Default Settings
-Use default workspace values:
+### Custom Diagnostic Setting Name (`-DiagnosticSettingName`)
+Use a custom name for the diagnostic settings (e.g., when you need separate settings per environment):
 ```powershell
-.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
+.\AVD-EnableDiagnosticLogs.ps1 `
+    -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+    -WorkspaceName "AVD-LogAnalytics" `
+    -WorkspaceResourceGroupName "rg-az-west2-avd-nonprod" `
+    -DiagnosticSettingName "AVD-Prod-Diagnostics"
+```
+
+### Custom CSV Export Path (`-CsvPath`)
+Export the configuration report to a specific file:
+```powershell
+.\AVD-EnableDiagnosticLogs.ps1 `
+    -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+    -CsvPath "C:\Reports\avd-diagnostics-status.csv"
+```
+
+### All Parameters Together
+Full example combining every parameter:
+```powershell
+.\AVD-EnableDiagnosticLogs.ps1 `
+    -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+    -WorkspaceName "AVD-LogAnalytics" `
+    -WorkspaceResourceGroupName "rg-az-west2-avd-nonprod" `
+    -DiagnosticSettingName "AVD-Prod-Diagnostics" `
+    -CsvPath ".\reports\avd-diag-report.csv"
+```
+
+### Recommended Workflow
+Run `-CheckOnly` first, then deploy, then verify:
+```powershell
+# 1. Audit current state
+.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUB-ID" -CheckOnly
+
+# 2. Enable diagnostics
+.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUB-ID" `
+    -WorkspaceName "YourLAW" -WorkspaceResourceGroupName "YourRG"
+
+# 3. Verify after deployment
+.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUB-ID" -CheckOnly
 ```
 
 ## Output
@@ -189,7 +235,7 @@ Use default workspace values:
 | Error / Issue | Resolution |
 |---|---|
 | `Failed to set subscription` | Run `az login` to authenticate before executing the script |
-| `Log Analytics Workspace not found` | Verify `-WorkspaceName` and `-WorkspaceResourceGroup` parameter values |
+| `Log Analytics Workspace not found` | Verify `-WorkspaceName` and `-WorkspaceResourceGroupName` parameter values |
 | `Conflict detected` | A duplicate diagnostic setting exists for the same workspace — remove it or use a different `-DiagnosticSettingName` |
 | Permission errors | Ensure your account has **Monitoring Contributor** on the AVD resources and the Log Analytics workspace |
 

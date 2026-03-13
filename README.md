@@ -13,26 +13,18 @@ PowerShell automation tools for configuring diagnostics, monitoring, and alertin
 ## Run Order
 
 1. First: `AVD-Diagnostics/AVD-EnableDiagnosticLogs.ps1`
-2. Preferred deployment path (Option 1): `AVD-AzAlerts/Deploy-AVD-AlertWebhook-LogicApp.ps1`
-3. Alternative deployment path (Option 2): `AVD-AzAlerts/Azure-AVD-Alerts.ps1`, then `AVD-AzAlerts/Deploy-AVD-AlertWebhook-LogicApp.ps1`
-4. Optional validation: `AVD-AzAlerts/Send-AVD-Webhook-TestAlert.ps1`
+2. Deploy alerts: `AVD-AzAlerts/Deploy-AVD-AlertWebhook-LogicApp.ps1`
+3. Optional validation: `AVD-AzAlerts/Send-AVD-Webhook-TestAlert.ps1`
 
 ## Script Flow Diagram
 
 ```mermaid
 flowchart TD
-  A[AVD-EnableDiagnosticLogs.ps1] --> O1[Option 1: Deploy-AVD-AlertWebhook-LogicApp.ps1]
-  A --> O2A[Option 2 Step 1: Azure-AVD-Alerts.ps1]
-  O2A --> O2B[Option 2 Step 2: Deploy-AVD-AlertWebhook-LogicApp.ps1]
+  A["1. AVD-EnableDiagnosticLogs.ps1\nEnable AVD diagnostics to Log Analytics"]
+  B["2. Deploy-AVD-AlertWebhook-LogicApp.ps1\nDeploy Logic App, action group, bootstrap alerts, enforce routing"]
+  C["3. Send-AVD-Webhook-TestAlert.ps1 (optional)\nPost synthetic payload for validation"]
 
-  O1 --> D[Send-AVD-Webhook-TestAlert.ps1 optional]
-  O2B --> D
-
-  A1[Enable AVD diagnostics to Log Analytics] --- A
-  O1A[Deploy Logic App + detailed action group, bootstrap missing alerts, enforce detailed-only routing] --- O1
-  O2A1[Create native AVD-Category alerts] --- O2A
-  O2B1[Add webhook-based rich alerts and cutover to detailed-only routing] --- O2B
-  D1[Post synthetic payload to callback URL for validation] --- D
+  A --> B --> C
 ```
 
 ## Execution Sequence
@@ -54,8 +46,6 @@ sequenceDiagram
   Eng->>Diag: Enable AVD diagnostics
   Diag->>LAW: Route diagnostic logs to workspace
 
-  rect rgb(236, 248, 255)
-  Note over Eng,Deploy: Option 1 (recommended): webhook-first
   Eng->>Deploy: Run webhook deployment
   Deploy->>LA: Deploy or update workflow
   Deploy->>AG: Ensure webhook receiver
@@ -66,15 +56,7 @@ sequenceDiagram
     Alerts->>Mon: Create missing AVD-Category rules
   end
   Deploy->>Mon: Route to Detailed action group only
-  end
-
-  rect rgb(245, 255, 245)
-  Note over Eng,Deploy: Option 2: native first, then cutover
-  Eng->>Alerts: Create native AVD-Category alerts
-  Alerts->>Mon: Configure native alert rules
-  Eng->>Deploy: Later run webhook cutover
-  Deploy->>Mon: Switch to Detailed action group only
-  end
+  Deploy-->>Eng: Deployment complete
 
   Mon->>AG: Fire webhook on alert match
   AG->>LA: Invoke callback URL with alert payload
@@ -98,14 +80,14 @@ Run `AVD-Diagnostics/AVD-EnableDiagnosticLogs.ps1` before deploying alerts unles
 
 Without diagnostic logs in Log Analytics, alert queries do not have data to evaluate.
 
-### Important: `LawName` (Log Analytics Workspace) Guidance
+### Important: `WorkspaceName` (Log Analytics Workspace) Guidance
 
-For `AVD-AzAlerts/Azure-AVD-Alerts.ps1`, `-LawName` is the Log Analytics workspace name used by alert queries.
+For `AVD-AzAlerts/Deploy-AVD-AlertWebhook-LogicApp.ps1`, `-WorkspaceName` is the Log Analytics workspace name used by alert queries.
 
 If there is already an existing AVD Log Analytics workspace (including Nerdio-managed environments), reuse it.
 
-- Set `-ResourceGroup` to the workspace resource group
-- Set `-LawName` to that existing workspace name
+- Set `-ResourceGroupName` to the workspace resource group
+- Set `-WorkspaceName` to that existing workspace name
 
 Do not create a new workspace unless needed.
 
@@ -120,11 +102,11 @@ pwsh -NoProfile -File .\AVD-EnableDiagnosticLogs.ps1 `
   -WorkspaceName "YOUR-LAW-NAME"
 ```
 
-### 2) Alerts and Webhook Deployment Options
+### 2) Alerts and Webhook Deployment
 
-#### Option 1 (Recommended): Rich Alerts via Webhook + Logic App (Single Script)
+#### Deploy Rich Alerts via Webhook + Logic App (Single Script)
 
-This option deploys webhook infrastructure, bootstraps missing `AVD-Category-*` alerts if needed, and applies detailed-only routing.
+This deploys webhook infrastructure, bootstraps missing `AVD-Category-*` alerts if needed, and applies detailed-only routing.
 
 ```powershell
 cd ..\AVD-Alerts
@@ -142,39 +124,9 @@ pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
 
 ATTENTION: Authorize `avd-alerts-office365` (or your chosen `-Office365ConnectionName`) in Azure Portal with valid mailbox credentials before expecting detailed emails.
 
-#### Option 2: Native Alerts First, Then Add Webhook-Based Rich Alerts
-
-Step 1: Deploy native alerts.
-
-```powershell
-pwsh -NoProfile -File .\Azure-AVD-Alerts.ps1 `
-  -EmailTo "admin@contoso.com" `
-  -ResourceGroup "YOUR-ALERTS-RG" `
-  -LawName "YOUR-LAW-NAME" `
-  -Location "eastus2"
-```
-
-Step 2: Add webhook-based rich alerts and cutover.
-
-```powershell
-pwsh -NoProfile -File .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
-  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -ResourceGroupName "YOUR-ALERTS-RG" `
-  -LogicAppName "AVD-alert-details" `
-  -Location "eastus2" `
-  -WorkspaceName "YOUR-LAW-NAME" `
-  -WorkspaceResourceGroupName "YOUR-LAW-RG" `
-  -SendFromEmail "alerts@contoso.com" `
-  -SendToEmails @("avd-oncall@contoso.com", "avd-manager@contoso.com") `
-  -Office365ConnectionName "avd-alerts-office365"
-```
-
 ## Current Alert Model
 
-The current model supports two deployment paths:
-
-- Option 1 (recommended): webhook-first single script with bootstrap + detailed-only routing
-- Option 2: native alerts first, then webhook-based rich alerts
+All alerts use webhook-based detailed routing through a Logic App. `Deploy-AVD-AlertWebhook-LogicApp.ps1` is the single deployment entry point, which bootstraps `AVD-Category-*` alerts and configures the webhook action group.
 
 See `AVD-AzAlerts/README.md` for full script details, RBAC, category breakdown, and end-to-end examples.
 

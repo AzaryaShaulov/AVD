@@ -1,3 +1,80 @@
+<#
+.SYNOPSIS
+    Validates required RBAC permissions for AVD alert deployment scripts.
+
+.DESCRIPTION
+    Evaluates whether the current or specified principal has the Azure RBAC actions
+    required by Deploy-AVD-AlertWebhook-LogicApp.ps1 and
+    Send-AVD-Webhook-TestAlert.ps1 across resource group, workspace, and subscription scopes.
+
+    Outputs a table and optional CSV report showing each required action, scope, and
+    whether the principal is granted that action.
+
+.PARAMETER SubscriptionId
+    Target Azure subscription ID.
+
+.PARAMETER ResourceGroupName
+    Resource group where alert resources are deployed.
+
+.PARAMETER WorkspaceName
+    Log Analytics workspace name.
+
+.PARAMETER WorkspaceResourceGroupName
+    Resource group containing the Log Analytics workspace.
+
+.PARAMETER Assignee
+    Optional UPN or service principal appId to evaluate instead of the signed-in user.
+
+.PARAMETER AssigneeObjectId
+    Optional Entra ID object ID of the principal to evaluate.
+
+.PARAMETER CsvPath
+    Output path for the CSV permission report. Defaults to current directory.
+
+.PARAMETER CustomRoleJsonPath
+    Output path for the custom role action manifest when -EmitCustomRoleJson is used.
+
+.PARAMETER RequireResourceGroupCreate
+    Include the resource group create action in the check set.
+
+.PARAMETER RequireRoleAssignmentWrite
+    Include the role assignment write action in the check set.
+
+.PARAMETER RequireWebhookTest
+    Include the Logic App callback URL action needed by Send-AVD-Webhook-TestAlert.ps1.
+
+.PARAMETER EmitCustomRoleJson
+    Export a JSON manifest of required and missing actions for custom role creation.
+
+.EXAMPLE
+    .\AzureRoles-precheck.ps1 `
+      -SubscriptionId "YOUR-SUB-ID" `
+      -ResourceGroupName "rg-avd-prod" `
+      -WorkspaceName "law-avd-prod" `
+      -WorkspaceResourceGroupName "rg-avd-prod"
+
+    Basic precheck for core alert deployment permissions.
+
+.EXAMPLE
+    .\AzureRoles-precheck.ps1 `
+      -SubscriptionId "YOUR-SUB-ID" `
+      -ResourceGroupName "rg-avd-prod" `
+      -WorkspaceName "law-avd-prod" `
+      -WorkspaceResourceGroupName "rg-avd-prod" `
+      -RequireRoleAssignmentWrite -RequireWebhookTest
+
+    Full precheck including role assignment write and webhook test permissions.
+
+.EXAMPLE
+    .\AzureRoles-precheck.ps1 `
+      -SubscriptionId "YOUR-SUB-ID" `
+      -ResourceGroupName "rg-avd-prod" `
+      -WorkspaceName "law-avd-prod" `
+      -WorkspaceResourceGroupName "rg-avd-prod" `
+      -Assignee "deployer@contoso.com" -EmitCustomRoleJson
+
+    Evaluate a specific user and export the action manifest for custom role creation.
+#>
 param(
     [Parameter(Mandatory = $true)]
     [string]$SubscriptionId,
@@ -19,6 +96,7 @@ param(
 
     [switch]$RequireResourceGroupCreate,
     [switch]$RequireRoleAssignmentWrite,
+    [switch]$RequireWebhookTest,
     [switch]$EmitCustomRoleJson
 )
 
@@ -312,15 +390,15 @@ if ([string]::IsNullOrWhiteSpace($CsvPath)) {
 }
 
 $checks = @(
-    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/read'; Why = 'Read action groups' },
-    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/write'; Why = 'Create/update action groups' },
-    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/read'; Why = 'Read scheduled query alerts' },
-    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/write'; Why = 'Create/update scheduled query alerts' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/read'; Why = 'Read action groups' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/actionGroups/write'; Why = 'Create/update action groups' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/read'; Why = 'Read scheduled query alerts' },
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Insights/scheduledQueryRules/write'; Why = 'Create/update scheduled query alerts' },
     [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1, Send-AVD-Webhook-TestAlert.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/read'; Why = 'Read Logic App workflow' },
     [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/write'; Why = 'Deploy/update Logic App workflow' },
     [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Web/connections/read'; Why = 'Read API connections' },
     [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Web/connections/write'; Why = 'Create/update Office 365 connection' },
-    [pscustomobject]@{ Script = 'Azure-AVD-Alerts.ps1, Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.OperationalInsights/workspaces/read'; Why = 'Resolve workspace details' }
+    [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.OperationalInsights/workspaces/read'; Why = 'Resolve workspace details' }
 )
 
 if ($RequireResourceGroupCreate) {
@@ -329,6 +407,10 @@ if ($RequireResourceGroupCreate) {
 
 if ($RequireRoleAssignmentWrite) {
     $checks += [pscustomobject]@{ Script = 'Deploy-AVD-AlertWebhook-LogicApp.ps1'; ScopeName = 'Workspace'; Scope = $workspaceScope; Action = 'Microsoft.Authorization/roleAssignments/write'; Why = 'Assign Log Analytics Reader to Logic App MI' }
+}
+
+if ($RequireWebhookTest) {
+    $checks += [pscustomobject]@{ Script = 'Send-AVD-Webhook-TestAlert.ps1'; ScopeName = 'ResourceGroup'; Scope = $rgScope; Action = 'Microsoft.Logic/workflows/triggers/listCallbackUrl/action'; Why = 'Resolve Logic App callback URL for test payload' }
 }
 
 $results = @()

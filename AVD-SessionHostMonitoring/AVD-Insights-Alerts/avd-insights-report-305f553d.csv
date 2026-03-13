@@ -1,0 +1,8 @@
+"AlertName","Category","Description","Severity","Action","Status"
+"AVD-Insights-Category-CorrelatedSignals","CorrelatedSignals","One or more correlated signals (CorrelatedHosts, FSLogixCorrelation) detected multi-dimensional degradation.","1 (Error)","Skipped","Skipped"
+"AVD-Insights-Category-DiskHealth","DiskHealth","One or more disk-health signals (DiskQueueLength, DiskFreeSpace) breached thresholds.","1 (Error)","Skipped","Skipped"
+"AVD-Insights-Category-EventLogAlerts","EventLogAlerts","FSLogix profile attach/detach failures or VHD errors detected in operational/admin event logs.","1 (Error)","Created","Success"
+"AVD-Insights-Category-GPUPerformance","GPUPerformance","GPU encoding time exceeds the 33ms RDP frame budget on GPU-enabled session hosts.","2 (Warning)","Skipped","Skipped"
+"AVD-Insights-Category-HostPerformance","HostPerformance","One or more host-performance signals (CPU, Memory, MemoryCommit, Pages, PageFaults, DiskTiming) breached thresholds.","1 (Error)","Skipped","Skipped"
+"AVD-Insights-Category-SessionLifecycle","SessionLifecycle","One or more session-lifecycle signals (SignInDegradation, CapacityPressure, SessionImbalance) breached thresholds.","1 (Error)","Created","Success"
+"AVD-Insights-Category-SessionQuality","SessionQuality","One or more session-quality signals (InputDelay, RoundTripLatency, UDPBandwidth) breached thresholds.","2 (Warning)","Skipped","Skipped"
