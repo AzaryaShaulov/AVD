@@ -14,7 +14,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     configures alert routing so Insights performance alerts send detailed
     notifications through the webhook path.
 
-    Follows the same patterns as Deploy-AVD-AlertWebhook-LogicApp.ps1 from
+    Follows the same patterns as AVD-Deploy-Alert-LogicApp.ps1 from
     AVD-AzAlerts: bootstrap missing alerts, create/update action group, deploy
     Logic App with managed identity, assign RBAC, and route alerts.
 
@@ -64,7 +64,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     Optional output path for post-run CSV summary report.
 
 .EXAMPLE
-    .\Deploy-AVD-Insights-LogicApp.ps1 `
+    .\AVD-Insights-Deploy-LogicApp.ps1 `
       -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
       -ResourceGroupName "rg-avd-monitoring" `
       -LogicAppName "AVD-Insights-Alert-Email" `
@@ -76,7 +76,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
       -Office365ConnectionName "avd-alerts-office365"
 
 .EXAMPLE
-    .\Deploy-AVD-Insights-LogicApp.ps1 `
+    .\AVD-Insights-Deploy-LogicApp.ps1 `
       -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
       -ResourceGroupName "rg-avd-monitoring" `
       -LogicAppName "AVD-Insights-Alert-Email" `
@@ -90,7 +90,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     - Deploys/updates Logic App workflow resources used for detailed Insights notifications.
     - Ensures AVD-Insights-Detailed action group webhook receiver is present and points to callback URL.
     - Assigns Log Analytics Reader to the Logic App managed identity for query access.
-    - Verifies required AVD-Insights alerts exist and bootstraps them via Deploy-AVD-Insights-Alerts.ps1 when missing.
+    - Verifies required AVD-Insights alerts exist and bootstraps them via AVD-Insights-Category-Alerts.ps1 when missing.
     - Applies detailed-only routing for Insights alerts after webhook deployment.
     - Reuses existing 'avd-alerts-office365' Office 365 API connection when available.
 
@@ -354,12 +354,12 @@ function Ensure-InsightsAlertsExist {
         return
     }
 
-    $deployAlertsScript = Join-Path $PSScriptRoot "Deploy-AVD-Insights-Alerts.ps1"
+    $deployAlertsScript = Join-Path $PSScriptRoot "AVD-Insights-Category-Alerts.ps1"
     if (-not (Test-Path $deployAlertsScript)) {
-        throw "Could not find Deploy-AVD-Insights-Alerts.ps1 at '$deployAlertsScript'."
+        throw "Could not find AVD-Insights-Category-Alerts.ps1 at '$deployAlertsScript'."
     }
 
-    Write-Host "Detected $($missingAlertNames.Count) missing AVD-Insights alert(s). Bootstrapping via Deploy-AVD-Insights-Alerts.ps1..." -ForegroundColor Yellow
+    Write-Host "Detected $($missingAlertNames.Count) missing AVD-Insights alert(s). Bootstrapping via AVD-Insights-Category-Alerts.ps1..." -ForegroundColor Yellow
 
     & $deployAlertsScript `
         -SubscriptionId $SubscriptionId `
@@ -373,7 +373,7 @@ function Ensure-InsightsAlertsExist {
         -CreateOnly $true
 
     if ($LASTEXITCODE -ne 0) {
-        throw "Bootstrap alert creation via Deploy-AVD-Insights-Alerts.ps1 failed."
+        throw "Bootstrap alert creation via AVD-Insights-Category-Alerts.ps1 failed."
     }
 
     # Verify bootstrap result
@@ -1200,7 +1200,7 @@ Write-Host "3. Your Azure Monitor alert rule names should match one of the follo
 $alertDefinitions | ForEach-Object { Write-Host "   - $($_.Name)" }
 Write-Host "4. If no rule name matches, the script uses the fallback Perf query."
 Write-Host "5. Detailed webhook action group: $DetailedActionGroupName ($DetailedWebhookReceiverName)"
-Write-Host "6. If AVD-Insights alerts were missing, they were auto-created via Deploy-AVD-Insights-Alerts.ps1."
+Write-Host "6. If AVD-Insights alerts were missing, they were auto-created via AVD-Insights-Category-Alerts.ps1."
 Write-Host "7. Existing AVD-Insights alerts were switched to detailed-only action group routing."
 
 $ScriptEndTime = Get-Date

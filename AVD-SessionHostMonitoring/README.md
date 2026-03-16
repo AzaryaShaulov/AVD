@@ -2,6 +2,8 @@
 
 This script automates Azure Virtual Desktop session host performance monitoring by creating a Data Collection Rule (DCR) that sends performance counters to a Log Analytics workspace in both the `InsightsMetrics` and `Perf` tables. It automatically discovers **all AVD host pools** in the subscription and provides an interactive menu to associate the DCR with session hosts across selected host pools, enabling AVD Insights and VM Insights dashboards with a single run.
 
+Once perf data is flowing, the companion [AVD-Insights-Alerts](AVD-Insights-Alerts/) scripts deploy **7 category-consolidated performance alerts with rich email notifications** — HTML emails that include the specific counter values, affected host names, and threshold breaches, far more actionable than standard Azure Monitor "alert fired" notifications.
+
 ## What It Does
 
 - Creates or updates a DCR that collects performance counters into **two** tables:
@@ -17,6 +19,22 @@ This script automates Azure Virtual Desktop session host performance monitoring 
 - Shows real-time progress with association status per VM
 - Reports per-pool and overall success/skip/fail counts
 - Supports idempotency: skips already-associated VMs automatically
+
+## Script Reference
+
+| # | Script | Purpose | What It Does | Quick Start (copy & paste) |
+| -- | ------ | ------- | ------------ | -------------------------- |
+| 1 | `AVD-Insights-Enable-PerfMetrics-Monitoring.ps1` | Deploy DCR + AMA for perf counters | Creates a Data Collection Rule collecting 28 perf counters into `InsightsMetrics` and `Perf` tables, auto-discovers all AVD host pools, provides an interactive menu to associate the DCR with session hosts, and installs AMA where missing. | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2"` |
+| 2 | `AVD-Insights-Alerts-Precheck.ps1` | Validate Insights prerequisites | Checks RBAC permissions, Azure CLI extensions, LAW connectivity, and verifies Perf counter data flow. Read-only — no changes made. | `.\AVD-Insights-Alerts\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"` |
+| 3 | `AVD-Insights-Deploy-LogicApp.ps1` | **Primary: deploy Insights alerts + email pipeline** | Creates/updates the Logic App, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 7 `AVD-Insights-Category-*` alerts. Single command does everything. | `.\AVD-Insights-Alerts\AVD-Insights-Deploy-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-Insights-Alert-Email" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmail "team@contoso.com"` |
+| 4 | `AVD-Insights-Category-Alerts.ps1` | Create Insights alert rules only | Reads alert definitions from `alerts-config.insights.json`, loads KQL query files, and creates scheduled query rules. Called automatically by script #3 — run directly only for standalone alert creation. | `.\AVD-Insights-Alerts\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2"` |
+
+**Additional modes:**
+
+| Mode | Command |
+| ---- | ------- |
+| WhatIf (preview changes) | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -WhatIf` |
+| Verbose + transcript | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -TranscriptPath "C:\Logs\dcr.log" -Verbose` |
 
 ## Features (v1.8)
 

@@ -27,15 +27,15 @@
   Only check and display current diagnostic settings status without making changes.
 
 .EXAMPLE
-  .\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
+  .\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
   Runs with specified subscription ID and default workspace values.
 
 .EXAMPLE
-  .\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID" -WorkspaceName "YourLAW" -WorkspaceResourceGroupName "YourRG"
+  .\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID" -WorkspaceName "YourLAW" -WorkspaceResourceGroupName "YourRG"
   Override all default values with custom subscription and workspace.
 
 .EXAMPLE
-  .\AVD-EnableDiagnosticLogs.ps1 -CheckOnly -SubscriptionId "YOUR-SUBSCRIPTION-ID"
+  .\AVD-Enable-Diagnostic-Logs.ps1 -CheckOnly -SubscriptionId "YOUR-SUBSCRIPTION-ID"
   Check current diagnostic settings status without making changes.
 
 .NOTES

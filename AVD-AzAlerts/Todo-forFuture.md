@@ -1,6 +1,6 @@
 ﻿# AVD Alerts — Future: WVD Diagnostic Log Table Alerts
 
-> **Status**: ✅ **IMPLEMENTED** — All 8 alerts below have been added to `Azure-AVD-Alerts.ps1` (March 2026).
+> **Status**: ✅ **IMPLEMENTED** — All 8 alerts below have been added to `AVD-Category-Alerts.ps1` (March 2026).
 > See `AVD-Alerts-Matrix.md` and `AVD-Alerts-Runbook.md` for full documentation.
 
 > **Scope**: Alerts that rely on AVD-native diagnostic log tables routed via host pool diagnostic settings.
@@ -112,6 +112,6 @@ WVDConnectionNetworkData
 ## Implementation Notes
 
 - All alerts above require **host pool diagnostic settings** sending logs to the **same Log Analytics workspace** used by the session-host monitoring DCR.
-- The deployment script should be added to `AVD/AVD-AzAlerts/` (alongside `Azure-AVD-Alerts.ps1`) since these are host-pool-scoped alerts, not session-host-scoped.
-- Reuse the existing `New-OrSkip-ScheduledQueryAlert` pattern from `Azure-AVD-Alerts.ps1`.
-- These alerts can share the same Logic App / webhook action group already deployed by `Deploy-AVD-AlertWebhook-LogicApp.ps1`.
+- The deployment script should be added to `AVD/AVD-AzAlerts/` (alongside `AVD-Category-Alerts.ps1`) since these are host-pool-scoped alerts, not session-host-scoped.
+- Reuse the existing `New-OrSkip-ScheduledQueryAlert` pattern from `AVD-Category-Alerts.ps1`.
+- These alerts can share the same Logic App / webhook action group already deployed by `AVD-Deploy-Alert-LogicApp.ps1`.

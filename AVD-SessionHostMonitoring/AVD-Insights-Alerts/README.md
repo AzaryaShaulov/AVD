@@ -1,6 +1,10 @@
 # AVD Insights Alerts
 
-Performance and session lifecycle alerting for Azure Virtual Desktop, driven by AVD Insights data (Perf counters, WVDCheckpoints, WVDAgentHealthStatus).
+**Rich performance and session lifecycle alerting** for Azure Virtual Desktop — delivering detailed, operator-friendly HTML emails that go beyond standard Azure Monitor notifications.
+
+Standard Azure Monitor alert emails show only the alert name and a portal link. These alerts use a **Logic App webhook pipeline** that re-queries Log Analytics when an alert fires, producing emails with specific counter values, affected session host names, threshold breaches, and inline troubleshooting context — so operators can assess and act without opening the Azure Portal.
+
+Driven by AVD Insights data: Perf counters (28 metrics via DCR), WVDCheckpoints, and WVDAgentHealthStatus.
 
 ## Overview
 
@@ -19,6 +23,22 @@ This solution **complements** the existing [AVD-AzAlerts](../../AVD-AzAlerts/) W
 | GPU Performance | AVD-Insights-Category-GPUPerformance | GPU Encoding Time | Perf (RemoteFX Graphics) |
 
 **7 category-consolidated alerts** (covering 19 sub-signals) across 7 categories. Each category alert unions all its sub-signals into a single scheduled-query rule — the alert fires when ANY signal in the category breaches its threshold. All thresholds are config-driven via `alerts-config.insights.json`.
+
+## Script Reference
+
+| # | Script | Purpose | What It Does | Quick Start (copy & paste) |
+| -- | ------ | ------- | ------------ | -------------------------- |
+| 1 | `AVD-Insights-Alerts-Precheck.ps1` | Validate prerequisites | Checks RBAC permissions, Azure CLI extensions, LAW connectivity, and verifies Perf counter data flow. Read-only — no changes made. | `.\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"` |
+| 2 | `AVD-Insights-Deploy-LogicApp.ps1` | **Primary: deploy alerts + email pipeline** | Creates/updates the Logic App, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 7 `AVD-Insights-Category-*` alerts. Single command does everything. | `.\AVD-Insights-Deploy-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-Insights-Alert-Email" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmail "team@contoso.com"` |
+| 3 | `AVD-Insights-Category-Alerts.ps1` | Create alert rules only | Reads definitions from `alerts-config.insights.json`, loads KQL query files, and creates Azure Monitor scheduled query rules. Called automatically by script #2 — run directly only for standalone alert creation or re-deploy after threshold changes. | `.\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2"` |
+
+**Additional modes:**
+
+| Mode | Command |
+| ---- | ------- |
+| WhatIf (dry run) | `.\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2" -WhatIf` |
+| Single category | `.\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2" -CategoryFilter "HostPerformance"` |
+| Override severity | `.\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2" -Severity 1` |
 
 ## Prerequisites
 
@@ -61,8 +81,8 @@ AVD-Insights-Alerts/
 │   ├── fslogix-correlation.kql
 │   ├── fslogix-profile-error.kql
 │   └── gpu-encoding-time.kql
-├── Deploy-AVD-Insights-LogicApp.ps1     # **Primary**: deploys Logic App + bootstraps alerts
-├── Deploy-AVD-Insights-Alerts.ps1       # Advanced: deploy/update alerts only
+├── AVD-Insights-Deploy-LogicApp.ps1     # **Primary**: deploys Logic App + bootstraps alerts
+├── AVD-Insights-Category-Alerts.ps1       # Advanced: deploy/update alerts only
 ├── AVD-Insights-Alerts-Precheck.ps1     # RBAC & data flow validation
 ├── README.md                            # This file
 ├── Insights-Alert-Matrix.md             # Alert reference matrix
@@ -73,7 +93,7 @@ AVD-Insights-Alerts/
 
 ### Recommended: Single-Command Deploy (Logic App + Alerts)
 
-The **primary entry point** is `Deploy-AVD-Insights-LogicApp.ps1`. It deploys the Logic App email pipeline and automatically **bootstraps any missing AVD-Insights alerts** via `Deploy-AVD-Insights-Alerts.ps1`. If all 7 category alerts already exist, the bootstrap step is skipped.
+The **primary entry point** is `AVD-Insights-Deploy-LogicApp.ps1`. It deploys the Logic App email pipeline and automatically **bootstraps any missing AVD-Insights alerts** via `AVD-Insights-Category-Alerts.ps1`. If all 7 category alerts already exist, the bootstrap step is skipped.
 
 #### Step 1 (Optional): Run Pre-Checks
 
@@ -89,7 +109,7 @@ This validates RBAC, Azure CLI extensions, LAW connectivity, and verifies Perf c
 #### Step 2: Deploy Everything
 
 ```powershell
-.\Deploy-AVD-Insights-LogicApp.ps1 `
+.\AVD-Insights-Deploy-LogicApp.ps1 `
   -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
   -ResourceGroupName "rg-avd-prod" `
   -LogicAppName "AVD-Insights-Alert-Email" `
@@ -106,20 +126,20 @@ This single command will:
 3. Deploy the Logic App with system-assigned managed identity
 4. Assign **Log Analytics Reader** RBAC to the Logic App identity
 5. Create the **AVD-Insights-Detailed** webhook action group pointing to the Logic App callback URL
-6. **Bootstrap** any missing AVD-Insights category alerts (calls `Deploy-AVD-Insights-Alerts.ps1` internally)
+6. **Bootstrap** any missing AVD-Insights category alerts (calls `AVD-Insights-Category-Alerts.ps1` internally)
 7. Switch all AVD-Insights alerts to the detailed-only action group
 
 > **Note:** The Office 365 API connection may require manual authorization in Azure Portal before emails flow.
 
 ### Advanced: Deploy Alerts Only
 
-Use `Deploy-AVD-Insights-Alerts.ps1` directly when you need to:
+Use `AVD-Insights-Category-Alerts.ps1` directly when you need to:
 - Deploy alerts **without** the Logic App email pipeline
 - Re-deploy or update specific alerts (e.g., after editing KQL thresholds)
 - Use a different action group or webhook target
 
 ```powershell
-.\Deploy-AVD-Insights-Alerts.ps1 `
+.\AVD-Insights-Category-Alerts.ps1 `
   -ResourceGroup "rg-avd-prod" `
   -WorkspaceName "law-avd-prod" `
   -Location "eastus2" `
@@ -131,25 +151,25 @@ Use `Deploy-AVD-Insights-Alerts.ps1` directly when you need to:
 ### Preview Changes (Dry Run)
 
 ```powershell
-.\Deploy-AVD-Insights-Alerts.ps1 -ResourceGroup "rg-avd" -WorkspaceName "law-avd" -Location "eastus2" -WhatIf
+.\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "rg-avd" -WorkspaceName "law-avd" -Location "eastus2" -WhatIf
 ```
 
 ### Deploy a Single Category
 
 ```powershell
-.\Deploy-AVD-Insights-Alerts.ps1 ... -CategoryFilter "HostPerformance"
+.\AVD-Insights-Category-Alerts.ps1 ... -CategoryFilter "HostPerformance"
 ```
 
 ### Deploy a Single Alert
 
 ```powershell
-.\Deploy-AVD-Insights-Alerts.ps1 ... -AlertFilter "AVD-Insights-Category-HostPerformance"
+.\AVD-Insights-Category-Alerts.ps1 ... -AlertFilter "AVD-Insights-Category-HostPerformance"
 ```
 
 ### Override Severity
 
 ```powershell
-.\Deploy-AVD-Insights-Alerts.ps1 ... -Severity 1   # Error
+.\AVD-Insights-Category-Alerts.ps1 ... -Severity 1   # Error
 ```
 
 ### Tune Thresholds
@@ -168,13 +188,13 @@ flowchart TD
 
     subgraph "Primary Deployment (recommended)"
         PRE["AVD-Insights-Alerts-Precheck.ps1<br>RBAC + data flow check"]
-        LA["Deploy-AVD-Insights-LogicApp.ps1<br>Logic App + bootstrap alerts"]
+        LA["AVD-Insights-Deploy-LogicApp.ps1<br>Logic App + bootstrap alerts"]
     end
 
     subgraph "Bootstrapped Automatically"
         CFG["alerts-config.insights.json<br>thresholds & metadata"]
         KQL["queries/category-*.kql<br>7 consolidated KQL files"]
-        DEPLOY["Deploy-AVD-Insights-Alerts.ps1<br>creates scheduled query rules"]
+        DEPLOY["AVD-Insights-Category-Alerts.ps1<br>creates scheduled query rules"]
     end
 
     AMA --> DCR

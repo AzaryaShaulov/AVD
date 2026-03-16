@@ -96,6 +96,20 @@ Enabling diagnostic logs for Azure Virtual Desktop is considered a **critical be
 | **Azure Monitor Integration** | • Build comprehensive dashboards with AVD metrics<br>• Integrate with Azure Monitor Workbooks for visualization<br>• Create automated remediation workflows<br>• Export data to SIEM systems for enterprise-wide monitoring |
 | **Microsoft Support Requirements** | • Microsoft Support often requires diagnostic logs for troubleshooting<br>• Proactive logging accelerates support case resolution<br>• Historical data helps identify intermittent issues |
 
+## Script Reference
+
+| Script | Purpose | What It Does | Quick Start (copy & paste) |
+| ------ | ------- | ------------ | -------------------------- |
+| `AVD-Enable-Diagnostic-Logs.ps1` | Enable AVD diagnostic logs to Log Analytics | Discovers all host pools, application groups, and workspaces in a subscription. Configures `allLogs` diagnostic settings to route telemetry to a Log Analytics workspace. Verifies settings after applying and exports results to CSV. | `.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG"` |
+
+**Additional modes:**
+
+| Mode | Command |
+| ---- | ------- |
+| Check only (read-only audit) | `.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" -CheckOnly` |
+| Custom workspace | `.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" -WorkspaceName "MyLAW" -WorkspaceResourceGroupName "rg-law"` |
+| Custom CSV export | `.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" -CsvPath "C:\Reports\diag-status.csv"` |
+
 ## Features
 
 - 🔍 **Auto-discovery** of AVD resources (Host Pools, Application Groups, Workspaces)
@@ -130,7 +144,7 @@ Before running this script, ensure:
 
 2. **Run the script:**
    ```powershell
-   .\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
+   .\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
    ```
 
 ## Parameters
@@ -149,13 +163,13 @@ Before running this script, ensure:
 ### Basic — Enable Diagnostics with Defaults
 Discovers all AVD resources in the subscription and enables `allLogs` diagnostic settings pointing to the default workspace (`AVD-LAW` in `rg-avd-monitoring`):
 ```powershell
-.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
+.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
 ```
 
 ### Check-Only Mode (`-CheckOnly`)
 Review the current diagnostic settings status across all AVD resources **without making any changes**. Useful for auditing before a deployment or verifying after one:
 ```powershell
-.\AVD-EnableDiagnosticLogs.ps1 `
+.\AVD-Enable-Diagnostic-Logs.ps1 `
     -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
     -CheckOnly
 ```
@@ -164,7 +178,7 @@ Output shows per-resource status: `Enabled (allLogs)`, `Enabled (not allLogs)`, 
 ### Custom Workspace (`-WorkspaceName`, `-WorkspaceResourceGroupName`)
 Point diagnostics at a specific Log Analytics workspace in a different resource group:
 ```powershell
-.\AVD-EnableDiagnosticLogs.ps1 `
+.\AVD-Enable-Diagnostic-Logs.ps1 `
     -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
     -WorkspaceName "AVD-LogAnalytics" `
     -WorkspaceResourceGroupName "rg-az-west2-avd-nonprod"
@@ -173,7 +187,7 @@ Point diagnostics at a specific Log Analytics workspace in a different resource 
 ### Custom Diagnostic Setting Name (`-DiagnosticSettingName`)
 Use a custom name for the diagnostic settings (e.g., when you need separate settings per environment):
 ```powershell
-.\AVD-EnableDiagnosticLogs.ps1 `
+.\AVD-Enable-Diagnostic-Logs.ps1 `
     -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
     -WorkspaceName "AVD-LogAnalytics" `
     -WorkspaceResourceGroupName "rg-az-west2-avd-nonprod" `
@@ -183,7 +197,7 @@ Use a custom name for the diagnostic settings (e.g., when you need separate sett
 ### Custom CSV Export Path (`-CsvPath`)
 Export the configuration report to a specific file:
 ```powershell
-.\AVD-EnableDiagnosticLogs.ps1 `
+.\AVD-Enable-Diagnostic-Logs.ps1 `
     -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
     -CsvPath "C:\Reports\avd-diagnostics-status.csv"
 ```
@@ -191,7 +205,7 @@ Export the configuration report to a specific file:
 ### All Parameters Together
 Full example combining every parameter:
 ```powershell
-.\AVD-EnableDiagnosticLogs.ps1 `
+.\AVD-Enable-Diagnostic-Logs.ps1 `
     -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
     -WorkspaceName "AVD-LogAnalytics" `
     -WorkspaceResourceGroupName "rg-az-west2-avd-nonprod" `
@@ -203,14 +217,14 @@ Full example combining every parameter:
 Run `-CheckOnly` first, then deploy, then verify:
 ```powershell
 # 1. Audit current state
-.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUB-ID" -CheckOnly
+.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" -CheckOnly
 
 # 2. Enable diagnostics
-.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUB-ID" `
+.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" `
     -WorkspaceName "YourLAW" -WorkspaceResourceGroupName "YourRG"
 
 # 3. Verify after deployment
-.\AVD-EnableDiagnosticLogs.ps1 -SubscriptionId "YOUR-SUB-ID" -CheckOnly
+.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" -CheckOnly
 ```
 
 ## Output
@@ -252,7 +266,7 @@ Run `-CheckOnly` first, then deploy, then verify:
 | Microsoft Docs | [AVD Diagnostics Overview](https://learn.microsoft.com/en-us/azure/virtual-desktop/diagnostics-log-analytics) | Official diagnostics & Log Analytics guide |
 | Microsoft Docs | [Azure Monitor Diagnostic Settings](https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings) | Diagnostic settings reference |
 | Microsoft Docs | [AVD Required URLs](https://learn.microsoft.com/en-us/azure/virtual-desktop/safe-url-list) | Firewall & network requirements |
-| This Repo | [AVD Alerts Script](../AVD-Alerts/) | Automated alerting for AVD error conditions |
+| This Repo | [AVD Alerts Script](../AVD-AzAlerts/) | Automated alerting for AVD error conditions |
 | This Repo | [AVD Session Host Monitoring](../AVD-SessionHostMonitoring/) | DCR-based performance counter collection |
 | Azure | [AVD Insights Workbook](https://learn.microsoft.com/en-us/azure/virtual-desktop/insights) | Built-in Azure Monitor workbook for AVD |
 | Community | [AVD Tech Community](https://techcommunity.microsoft.com/t5/azure-virtual-desktop/bd-p/AzureVirtualDesktopForum) | Microsoft Tech Community forum |

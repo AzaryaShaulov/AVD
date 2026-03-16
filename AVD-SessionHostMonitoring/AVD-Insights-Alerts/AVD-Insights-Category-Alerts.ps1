@@ -12,10 +12,10 @@ QUICK START:
    - Location: Your Azure region (e.g., eastus, westus2)
 
 2. Run the script:
-   .\Deploy-AVD-Insights-Alerts.ps1
+   .\AVD-Insights-Category-Alerts.ps1
 
 3. Or override any parameter:
-   .\Deploy-AVD-Insights-Alerts.ps1 -SubscriptionId "12345678-..." `
+   .\AVD-Insights-Category-Alerts.ps1 -SubscriptionId "12345678-..." `
      -ResourceGroup "rg-avd" -WorkspaceName "law-avd" -Location "eastus2" `
      -WebhookUrl "https://contoso.logic.azure.com/workflows/..."
 ==============================================================================
@@ -83,14 +83,14 @@ QUICK START:
   Preview changes without creating or modifying resources.
 
 .EXAMPLE
-  .\Deploy-AVD-Insights-Alerts.ps1 -ResourceGroup "rg-avd-prod" `
+  .\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "rg-avd-prod" `
     -WorkspaceName "law-avd-prod" -Location "eastus2"
 
 .EXAMPLE
-  .\Deploy-AVD-Insights-Alerts.ps1 -CategoryFilter "HostPerformance" -WhatIf
+  .\AVD-Insights-Category-Alerts.ps1 -CategoryFilter "HostPerformance" -WhatIf
 
 .EXAMPLE
-  .\Deploy-AVD-Insights-Alerts.ps1 -AlertFilter "AVD-Insights-Category-HostPerformance" -Severity 1
+  .\AVD-Insights-Category-Alerts.ps1 -AlertFilter "AVD-Insights-Category-HostPerformance" -Severity 1
 #>
 
 [CmdletBinding(SupportsShouldProcess)]

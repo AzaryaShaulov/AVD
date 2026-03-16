@@ -60,7 +60,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     If omitted, defaults to .\avd-webhook-deploy-report-<subscriptionPrefix>.csv.
 
 .EXAMPLE
-    .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
+    .\AVD-Deploy-Alert-LogicApp.ps1 `
       -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
       -ResourceGroupName "rg-avd-monitoring" `
       -LogicAppName "AVD-alert-details" `
@@ -74,7 +74,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     Deploy webhook-based detailed notifications using a single recipient.
 
 .EXAMPLE
-    .\Deploy-AVD-AlertWebhook-LogicApp.ps1 `
+    .\AVD-Deploy-Alert-LogicApp.ps1 `
       -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
       -ResourceGroupName "rg-avd-monitoring" `
       -LogicAppName "AVD-alert-details" `
@@ -404,12 +404,12 @@ function Ensure-AVDCategoryAlertsExist {
         return
     }
 
-    $coreAlertsScriptPath = Join-Path -Path $PSScriptRoot -ChildPath "Azure-AVD-Alerts.ps1"
+    $coreAlertsScriptPath = Join-Path -Path $PSScriptRoot -ChildPath "AVD-Category-Alerts.ps1"
     if (-not (Test-Path -Path $coreAlertsScriptPath)) {
-        throw "Could not find Azure-AVD-Alerts.ps1 at '$coreAlertsScriptPath'."
+        throw "Could not find AVD-Category-Alerts.ps1 at '$coreAlertsScriptPath'."
     }
 
-    Write-Host "Detected $($missingAlertNames.Count) missing AVD-Category alert(s). Bootstrapping core alerts via Azure-AVD-Alerts.ps1..." -ForegroundColor Yellow
+    Write-Host "Detected $($missingAlertNames.Count) missing AVD-Category alert(s). Bootstrapping core alerts via AVD-Category-Alerts.ps1..." -ForegroundColor Yellow
 
     & $coreAlertsScriptPath `
         -SubscriptionId $SubscriptionId `
@@ -423,7 +423,7 @@ function Ensure-AVDCategoryAlertsExist {
         -CreateOnly $true
 
     if ($LASTEXITCODE -ne 0) {
-        throw "Bootstrap alert creation via Azure-AVD-Alerts.ps1 failed."
+        throw "Bootstrap alert creation via AVD-Category-Alerts.ps1 failed."
     }
 
     $postBootstrapOutput = Invoke-AzCliText -Arguments @(
@@ -1294,7 +1294,7 @@ Write-Host "3. Your Azure Monitor alert rule names should match one of the follo
 $alertDefinitions | ForEach-Object { Write-Host "   - $($_.Name)" }
 Write-Host "4. If no rule name matches, the script uses the fallback WVDErrors query."
 Write-Host "5. Detailed webhook action group: $DetailedActionGroupName ($DetailedWebhookReceiverName)"
-Write-Host "6. If AVD-Category alerts were missing, they were auto-created via Azure-AVD-Alerts.ps1."
+Write-Host "6. If AVD-Category alerts were missing, they were auto-created via AVD-Category-Alerts.ps1."
 Write-Host "7. Existing AVD-Category alerts were switched to detailed-only action group routing."
 
 $ScriptEndTime = Get-Date

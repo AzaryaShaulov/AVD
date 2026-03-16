@@ -15,10 +15,10 @@ QUICK START:
    - SubscriptionId: (Optional) Specify if you want to target a specific subscription
 
 2. Run the script:
-   .\Azure-AVD-Alerts.ps1 -DetailedResultsWebhookUrl "https://..."
+   .\AVD-Category-Alerts.ps1 -DetailedResultsWebhookUrl "https://..."
 
 3. Or override any parameter:
-   .\Azure-AVD-Alerts.ps1 -SubscriptionId "12345678-1234-1234-1234-123456789012" `
+   .\AVD-Category-Alerts.ps1 -SubscriptionId "12345678-1234-1234-1234-123456789012" `
      -ResourceGroup "rg-avd" -WorkspaceName "law-avd" -Location "eastus2" `
      -DetailedResultsWebhookUrl "https://contoso.logic.azure.com/workflows/..."
 ==============================================================================
@@ -80,21 +80,21 @@ QUICK START:
 
 .EXAMPLE
   # Deploy alerts with webhook action group (after updating defaults in script)
-  .\Azure-AVD-Alerts.ps1 -DetailedResultsWebhookUrl "https://contoso.logic.azure.com/workflows/..."
+  .\AVD-Category-Alerts.ps1 -DetailedResultsWebhookUrl "https://contoso.logic.azure.com/workflows/..."
 
 .EXAMPLE
   # Specify subscription and resource group
-  .\Azure-AVD-Alerts.ps1 -SubscriptionId "12345678-1234-1234-1234-123456789012" `
+  .\AVD-Category-Alerts.ps1 -SubscriptionId "12345678-1234-1234-1234-123456789012" `
     -ResourceGroup "rg-avd-prod" -WorkspaceName "law-avd-prod" -Location "eastus2" `
     -DetailedResultsWebhookUrl "https://contoso.logic.azure.com/workflows/..."
 
 .EXAMPLE
   # Preview changes without creating alerts
-  .\Azure-AVD-Alerts.ps1 -Severity 0 -WhatIf
+  .\AVD-Category-Alerts.ps1 -Severity 0 -WhatIf
 
 .EXAMPLE
   # Use existing pre-created action group (no webhook URL needed)
-  .\Azure-AVD-Alerts.ps1 -ResourceGroup "rg-avd-prod" -WorkspaceName "law-avd-prod" -Location "eastus2"
+  .\AVD-Category-Alerts.ps1 -ResourceGroup "rg-avd-prod" -WorkspaceName "law-avd-prod" -Location "eastus2"
 #>
 
 [CmdletBinding(SupportsShouldProcess)]

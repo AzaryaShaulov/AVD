@@ -79,7 +79,7 @@ $payload = @{
       severity = 'Sev3'
       monitorCondition = 'Fired'
       firedDateTime = (Get-Date).ToString('o')
-      description = 'Manual test sample alert from Send-AVD-Webhook-TestAlert.ps1'
+      description = 'Manual test sample alert from AVD-Webhook-TestAlert.ps1'
     }
     alertContext = @{
       SearchResults = @{
