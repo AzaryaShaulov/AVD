@@ -19,7 +19,7 @@ AVD/
 ├── AVD-AzAlerts/              # WVDErrors category alerts + Logic App email pipeline
 ├── AVD-SessionHostMonitoring/ # Perf counter DCR + Insights category alerts + Logic App
 │   ├── AVD-Insights-Alerts/   # 7 category alert rules + Logic App email pipeline
-│   └── AVD-Insights-Enable-PerfMetrics-Monitoring.ps1  # DCR + AMA setup
+│   └── AVD-Insights-Enable-PerfMetrics-Monitoring.ps1  # DCR setup (+ AMA with -InstallAma)
 └── README.md
 ```
 
@@ -32,7 +32,7 @@ AVD/
 | 3 | `AVD-Deploy-Alert-LogicApp.ps1` | Deploy WVDErrors alerts + email Logic App | **Primary entry point for WVDErrors alerting.** Creates/updates the Logic App, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 16 `AVD-Category-*` scheduled query alerts. Single command — no other scripts needed. | `.\AVD-AzAlerts\AVD-Deploy-Alert-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-alert-details" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmails "team@contoso.com"` |
 | 4 | `AVD-Category-Alerts.ps1` | Create AVD category alert rules | Creates and maintains `AVD-Category-*` scheduled query alerts and the webhook action group. Called automatically by script #3 — run directly only when you need standalone alert creation without the Logic App pipeline. | `.\AVD-AzAlerts\AVD-Category-Alerts.ps1 -DetailedResultsWebhookUrl "https://your-logicapp-callback-url"` |
 | 5 | `AVD-Webhook-TestAlert.ps1` | Validate webhook end-to-end | Posts a synthetic Azure Monitor alert payload to a Logic App callback URL. Use after deployment to verify emails arrive. | `.\AVD-AzAlerts\AVD-Webhook-TestAlert.ps1 -ResourceGroup "YOUR-RG" -LogicAppName "AVD-alert-details"` |
-| 6 | `AVD-Insights-Enable-PerfMetrics-Monitoring.ps1` | Deploy DCR + AMA for perf counters | Creates a Data Collection Rule collecting 28 perf counters into `InsightsMetrics` and `Perf` tables, auto-discovers all AVD host pools, provides an interactive menu to associate the DCR with session hosts, and installs AMA where missing. | `.\AVD-SessionHostMonitoring\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2"` |
+| 6 | `AVD-Insights-Enable-PerfMetrics-Monitoring.ps1` | Deploy DCR for perf counters | Creates a Data Collection Rule collecting 28 perf counters into `InsightsMetrics` and `Perf` tables, auto-discovers all AVD host pools, and provides an interactive menu to associate the DCR with session hosts. Add `-InstallAma` to also install AMA on VMs where missing. | `.\AVD-SessionHostMonitoring\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2"` |
 | 7 | `AVD-Insights-Alerts-Precheck.ps1` | Validate Insights prerequisites | Checks RBAC permissions, Azure CLI extensions, LAW connectivity, and verifies that Perf counter data is flowing to the workspace. Read-only — no changes made. | `.\AVD-SessionHostMonitoring\AVD-Insights-Alerts\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"` |
 | 8 | `AVD-Insights-Deploy-LogicApp.ps1` | Deploy Insights alerts + email Logic App | **Primary entry point for Insights alerting.** Creates/updates the Logic App, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 7 `AVD-Insights-Category-*` alerts. Single command — no other scripts needed. | `.\AVD-SessionHostMonitoring\AVD-Insights-Alerts\AVD-Insights-Deploy-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-Insights-Alert-Email" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmail "team@contoso.com"` |
 | 9 | `AVD-Insights-Category-Alerts.ps1` | Create Insights alert rules only | Reads alert definitions from `alerts-config.insights.json`, loads KQL query files, and creates Azure Monitor scheduled query rules. Called automatically by script #8 — run directly only when you need standalone alert creation without the Logic App pipeline. | `.\AVD-SessionHostMonitoring\AVD-Insights-Alerts\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2"` |
@@ -57,7 +57,7 @@ flowchart TD
 
     subgraph PATH_B ["Insights Performance Alert Emails"]
         B1["1. Enable Diagnostic Settings\nAVD-Enable-Diagnostic-Logs.ps1"]
-        B2["2. Deploy DCR + AMA\nAVD-Insights-Enable-PerfMetrics-Monitoring.ps1"]
+        B2["2. Deploy DCR\nAVD-Insights-Enable-PerfMetrics-Monitoring.ps1"]
         B3["3. Deploy Insights Logic App\nAVD-Insights-Deploy-LogicApp.ps1"]
         B4["4. Authorize Office 365 connection\nin Azure Portal"]
         B5["5. (Optional) Send test alert\nAVD-Webhook-TestAlert.ps1"]
@@ -67,7 +67,7 @@ flowchart TD
     subgraph PATH_C ["Both: Full Monitoring Stack"]
         C1["1. Enable Diagnostic Settings\nAVD-Enable-Diagnostic-Logs.ps1"]
         C2["2a. Deploy Webhook Logic App\nAVD-Deploy-Alert-LogicApp.ps1"]
-        C3["2b. Deploy DCR + AMA\nAVD-Insights-Enable-PerfMetrics-Monitoring.ps1"]
+        C3["2b. Deploy DCR\nAVD-Insights-Enable-PerfMetrics-Monitoring.ps1"]
         C4["3. Deploy Insights Logic App\nAVD-Insights-Deploy-LogicApp.ps1"]
         C5["4. Authorize both Office 365\nconnections in Azure Portal"]
         C6["5. (Optional) Send test alerts\nAVD-Webhook-TestAlert.ps1"]
@@ -139,7 +139,7 @@ See [AVD-AzAlerts/README.md](AVD-AzAlerts/README.md) for full details, RBAC brea
 
 ## Quick Start: AVD-SessionHostMonitoring (Insights)
 
-Deploys a Data Collection Rule with 28 perf counters, installs AMA on session hosts, then deploys 7 Insights category alerts + a Logic App for detailed email notifications.
+Deploys a Data Collection Rule with 28 perf counters and associates it with session hosts, then deploys 7 Insights category alerts + a Logic App for detailed email notifications. Add `-InstallAma` to also install AMA on VMs where missing.
 
 ### Insights Requirements
 
@@ -168,9 +168,8 @@ The script will:
 1. Create a DCR collecting 28 perf counters into both `InsightsMetrics` and `Perf` tables
 2. Discover all AVD host pools in the subscription
 3. Present an interactive menu to associate DCR with session hosts
-4. Install Azure Monitor Agent (AMA) on VMs where missing
 
-> **Tip:** Add `-WhatIf` to preview without making changes. Add `-Verbose` for detailed diagnostic output.
+> **Tip:** Add `-InstallAma` to also install AMA on VMs where missing. Add `-WhatIf` to preview without making changes. Add `-Verbose` for detailed diagnostic output.
 
 ### Step 2: Deploy Insights alerts + Logic App (single command)
 

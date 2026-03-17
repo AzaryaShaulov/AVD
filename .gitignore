@@ -9,3 +9,6 @@ AVD-AzAlerts/*.csv
 **/*.csv
 **/*.log
 
+# Work-in-progress scripts (not ready for repo)
+AVD-SessionHostMonitoring/AVD-Insights-Deploy-AMA-Agent.ps1
+

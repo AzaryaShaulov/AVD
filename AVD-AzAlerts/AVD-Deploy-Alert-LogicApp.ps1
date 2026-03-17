@@ -821,6 +821,151 @@ $commonProjection
 "@
     }
 
+    # --- WVD Diagnostic Log alerts (non-WVDErrors tables) ---
+
+    @{
+        Name        = "AVD-Category-ConnectionFailureRate"
+        Description = "Spike in failed connections per host pool from WVDConnections."
+        Kql         = @"
+WVDConnections
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| where State == 'Failed'
+| extend HostPool = tostring(split(_ResourceId, '/')[-1])
+| summarize FailedCount = count() by HostPool, UserName
+| where FailedCount > 5
+| project HostPool, UserName, FailedCount
+| order by FailedCount desc
+| limit 100
+"@
+    }
+
+    @{
+        Name        = "AVD-Category-DisconnectionSpike"
+        Description = "Abnormal disconnection rate across session hosts indicating infrastructure or network instability."
+        Kql         = @"
+WVDConnections
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| where State == 'Completed'
+| where ConnectionType == 'Disconnected'
+| extend HostPool = tostring(split(_ResourceId, '/')[-1])
+| summarize DisconnectCount = count() by HostPool, SessionHostName
+| where DisconnectCount > 10
+| project HostPool, SessionHostName, DisconnectCount
+| order by DisconnectCount desc
+| limit 100
+"@
+    }
+
+    @{
+        Name        = "AVD-Category-UnhealthyHosts"
+        Description = "Session hosts reporting non-Available status from WVDAgentHealthStatus."
+        Kql         = @"
+WVDAgentHealthStatus
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| summarize arg_max(TimeGenerated, *) by SessionHostName
+| where Status != 'Available'
+| extend HostPool = tostring(split(_ResourceId, '/')[-1])
+| project HostPool, SessionHostName, Status, LastHeartBeat = TimeGenerated
+| order by LastHeartBeat asc
+| limit 100
+"@
+    }
+
+    @{
+        Name        = "AVD-Category-StaleHeartbeat"
+        Description = "Session hosts with stale agent heartbeat indicating communication failure or zombie hosts."
+        Kql         = @"
+WVDAgentHealthStatus
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| summarize arg_max(TimeGenerated, *) by SessionHostName
+| where TimeGenerated < ago(5m)
+| extend HostPool = tostring(split(_ResourceId, '/')[-1])
+| extend StaleSinceMin = datetime_diff('minute', now(), TimeGenerated)
+| project HostPool, SessionHostName, Status, StaleSinceMin
+| order by StaleSinceMin desc
+| limit 100
+"@
+    }
+
+    @{
+        Name        = "AVD-Category-BandwidthDrop"
+        Description = "Per-connection estimated bandwidth drops below threshold from WVDConnectionNetworkData."
+        Kql         = @"
+WVDConnectionNetworkData
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| summarize P10BW = percentile(EstAvailableBandwidthKBps, 10) by CorrelationId
+| where P10BW < 500
+| join kind=inner (
+    WVDConnections
+    | where TimeGenerated between (datetime({0}) .. datetime({1}))
+    | project CorrelationId, UserName, SessionHostName, _ResourceId
+) on CorrelationId
+| extend HostPool = tostring(split(_ResourceId, '/')[-1])
+| project HostPool, UserName, SessionHostName, P10BW_KBps = round(P10BW, 0)
+| order by P10BW_KBps asc
+| limit 100
+"@
+    }
+
+    @{
+        Name        = "AVD-Category-RTTPerUser"
+        Description = "Per-user P95 round-trip time exceeds threshold from WVDConnectionNetworkData."
+        Kql         = @"
+WVDConnectionNetworkData
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| summarize P95RTT = percentile(EstRoundTripTimeInMs, 95) by CorrelationId
+| where P95RTT > 200
+| join kind=inner (
+    WVDConnections
+    | where TimeGenerated between (datetime({0}) .. datetime({1}))
+    | project CorrelationId, UserName, SessionHostName, _ResourceId
+) on CorrelationId
+| extend HostPool = tostring(split(_ResourceId, '/')[-1])
+| project HostPool, UserName, SessionHostName, P95RTT_ms = round(P95RTT, 0)
+| order by P95RTT_ms desc
+| limit 100
+"@
+    }
+
+    @{
+        Name        = "AVD-Category-SignInPhaseDelay"
+        Description = "Prolonged sign-in phases detected from WVDCheckpoints (profile load, GPO, shell start)."
+        Kql         = @"
+WVDCheckpoints
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| where Source == 'WVDConnections'
+| where Name in ('OnConnected', 'ShellReady', 'LoadProfile', 'ApplyGroupPolicy')
+| extend HostPool = tostring(split(_ResourceId, '/')[-1])
+| extend DurationSec = datetime_diff('second', TimeGenerated, todatetime(tostring(Parameters.StartTime)))
+| where DurationSec > 15
+| project HostPool, UserName, Name, DurationSec, SessionHostName = tostring(Parameters.SessionHostName)
+| order by DurationSec desc
+| limit 100
+"@
+    }
+
+    @{
+        Name        = "AVD-Category-FrameQualityDegradation"
+        Description = "[Preview] End-to-end frame delay or dropped frames exceeding threshold from ConnectionGraphicsData."
+        Kql         = @"
+ConnectionGraphicsData
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| summarize AvgFrameDelay = avg(EstEndToEndDelayInMs), DropPct = avg(FramesSkippedPercentage) by CorrelationId
+| where AvgFrameDelay > 300 or DropPct > 15
+| join kind=inner (
+    WVDConnections
+    | where TimeGenerated between (datetime({0}) .. datetime({1}))
+    | project CorrelationId, UserName, SessionHostName, _ResourceId
+) on CorrelationId
+| extend HostPool = tostring(split(_ResourceId, '/')[-1])
+| project HostPool, UserName, SessionHostName, AvgFrameDelay_ms = round(AvgFrameDelay, 0), DroppedFramesPct = round(DropPct, 1)
+| order by AvgFrameDelay_ms desc
+| limit 100
+"@
+    }
+
+    # --- Fallback ---
+
     @{
         Name        = "AVD-Category-DefaultFallback"
         Description = "Fallback WVDErrors query when alert rule name is not mapped."

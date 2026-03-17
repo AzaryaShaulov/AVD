@@ -375,6 +375,40 @@ function Test-AlertExists {
   return ($LASTEXITCODE -eq 0)
 }
 
+function Test-LawTableAvailable {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$WorkspaceResourceId,
+
+    [Parameter(Mandatory = $true)]
+    [string]$TableName,
+
+    [Parameter(Mandatory = $true)]
+    [string]$SubscriptionId
+  )
+
+  $probeQuery = "$TableName | take 1"
+  $probeOutput = az monitor log-analytics query `
+    --workspace $WorkspaceResourceId `
+    --analytics-query $probeQuery `
+    --timespan "PT1H" `
+    --subscription $SubscriptionId `
+    -o none 2>&1
+
+  if ($LASTEXITCODE -eq 0) {
+    return $true
+  }
+
+  $probeError = ($probeOutput | Out-String)
+  if ($probeError -match "Failed to resolve table or column expression named|Semantic error") {
+    return $false
+  }
+
+  # Conservative behavior: if probe fails for unknown reasons, skip preview alert to avoid hard failure.
+  Write-Log "Warning: Could not verify table '$TableName'. Skipping preview alert. Details: $probeError" "Yellow"
+  return $false
+}
+
 # ----------------------------
 # Resolve Log Analytics Workspace Resource ID
 # ----------------------------
@@ -621,6 +655,23 @@ $alertDefinitions = @(
   @{ Name = "AVD-Category-SignInPhaseDelay"; Description = "Prolonged sign-in phases detected from WVDCheckpoints (profile load, GPO, shell start)."; Kql = "WVDCheckpoints`n| where TimeGenerated > ago(15m)`n| where Source == 'WVDConnections'`n| where Name in ('OnConnected', 'ShellReady', 'LoadProfile', 'ApplyGroupPolicy')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| extend DurationSec = datetime_diff('second', TimeGenerated, todatetime(tostring(Parameters.StartTime)))`n| where DurationSec > 15`n| project HostPool, UserName, Name, DurationSec, SessionHostName = tostring(Parameters.SessionHostName)" },
   @{ Name = "AVD-Category-FrameQualityDegradation"; Description = "[Preview] End-to-end frame delay or dropped frames exceeding threshold from ConnectionGraphicsData."; Kql = "ConnectionGraphicsData`n| where TimeGenerated > ago(15m)`n| summarize AvgFrameDelay = avg(EstEndToEndDelayInMs), DropPct = avg(FramesSkippedPercentage) by CorrelationId`n| where AvgFrameDelay > 300 or DropPct > 15`n| join kind=inner (WVDConnections | where TimeGenerated > ago(15m) | project CorrelationId, UserName, SessionHostName, _ResourceId) on CorrelationId`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project HostPool, UserName, SessionHostName, AvgFrameDelay_ms = round(AvgFrameDelay, 0), DroppedFramesPct = round(DropPct, 1)" }
 )
+
+# ConnectionGraphicsData is preview and may not exist in every workspace.
+# Skip this single alert gracefully so core deployment can still complete.
+$frameQualityAlertName = "AVD-Category-FrameQualityDegradation"
+$hasConnectionGraphicsData = Test-LawTableAvailable -WorkspaceResourceId $LawId -TableName "ConnectionGraphicsData" -SubscriptionId $accountInfo.id
+if (-not $hasConnectionGraphicsData) {
+  Write-Log "ConnectionGraphicsData table not found in workspace '$WorkspaceName'. Skipping preview alert '$frameQualityAlertName'." "Yellow"
+  $alertDefinitions = @($alertDefinitions | Where-Object { $_.Name -ne $frameQualityAlertName })
+
+  $script:AlertResults += [pscustomobject]@{
+    AlertName   = $frameQualityAlertName
+    Description = "[Preview] End-to-end frame delay or dropped frames exceeding threshold from ConnectionGraphicsData."
+    Severity    = "$Severity ($severityText)"
+    Action      = "Skipped"
+    Status      = "Skipped"
+  }
+}
 
 # Build a definitive per-alert existence map in the main scope before any parallelism.
 # This is the authoritative source - built with reliable $LASTEXITCODE using Test-AlertExists,

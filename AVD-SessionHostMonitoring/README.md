@@ -24,7 +24,7 @@ Once perf data is flowing, the companion [AVD-Insights-Alerts](AVD-Insights-Aler
 
 | # | Script | Purpose | What It Does | Quick Start (copy & paste) |
 | -- | ------ | ------- | ------------ | -------------------------- |
-| 1 | `AVD-Insights-Enable-PerfMetrics-Monitoring.ps1` | Deploy DCR + AMA for perf counters | Creates a Data Collection Rule collecting 28 perf counters into `InsightsMetrics` and `Perf` tables, auto-discovers all AVD host pools, provides an interactive menu to associate the DCR with session hosts, and installs AMA where missing. | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2"` |
+| 1 | `AVD-Insights-Enable-PerfMetrics-Monitoring.ps1` | Deploy DCR for perf counters | Creates a Data Collection Rule collecting 28 perf counters into `InsightsMetrics` and `Perf` tables, auto-discovers all AVD host pools, and provides an interactive menu to associate the DCR with session hosts. Add `-InstallAma` to also install AMA on VMs where missing. | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2"` |
 | 2 | `AVD-Insights-Alerts-Precheck.ps1` | Validate Insights prerequisites | Checks RBAC permissions, Azure CLI extensions, LAW connectivity, and verifies Perf counter data flow. Read-only — no changes made. | `.\AVD-Insights-Alerts\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"` |
 | 3 | `AVD-Insights-Deploy-LogicApp.ps1` | **Primary: deploy Insights alerts + email pipeline** | Creates/updates the Logic App, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 7 `AVD-Insights-Category-*` alerts. Single command does everything. | `.\AVD-Insights-Alerts\AVD-Insights-Deploy-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-Insights-Alert-Email" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmail "team@contoso.com"` |
 | 4 | `AVD-Insights-Category-Alerts.ps1` | Create Insights alert rules only | Reads alert definitions from `alerts-config.insights.json`, loads KQL query files, and creates scheduled query rules. Called automatically by script #3 — run directly only for standalone alert creation. | `.\AVD-Insights-Alerts\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2"` |
@@ -33,6 +33,7 @@ Once perf data is flowing, the companion [AVD-Insights-Alerts](AVD-Insights-Aler
 
 | Mode | Command |
 | ---- | ------- |
+| With AMA install | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -InstallAma` |
 | WhatIf (preview changes) | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -WhatIf` |
 | Verbose + transcript | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -TranscriptPath "C:\Logs\dcr.log" -Verbose` |
 
@@ -59,6 +60,8 @@ Once perf data is flowing, the companion [AVD-Insights-Alerts](AVD-Insights-Aler
 | `SamplingFrequencyInSeconds` | No | `60` | Counter polling interval (10-3600 seconds) |
 | `CounterSpecifiers` | No | 28 counters | Array of performance counter paths to collect |
 | `TranscriptPath` | No | — | Optional path to save full script execution transcript |
+| `InstallAma` | No | Off | Also check and install Azure Monitor Agent on session host VMs during DCR association |
+| `AmaOnly` | No | Off | Run AMA validation/install workflow only (implies `-InstallAma`). Skips DCR create/update and associations |
 
 ## Counters Collected (Default - 28 Total)
 
@@ -134,7 +137,7 @@ Once perf data is flowing, the companion [AVD-Insights-Alerts](AVD-Insights-Aler
 
 ## Usage
 
-### Interactive mode: Create DCR and discover all host pools
+### Default mode: Create DCR + associate session hosts
 
 ```powershell
 .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 `
@@ -192,6 +195,21 @@ The script will:
   -TranscriptPath "C:\Logs\DCR-Setup.log" `
   -Verbose
 ```
+
+### With AMA install: Also install Azure Monitor Agent on VMs
+
+```powershell
+.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 `
+  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+  -LawRG "rg-avd-monitoring" `
+  -LawName "law-avd-prod" `
+  -DcrRG "rg-avd-monitoring" `
+  -DcrName "AVD-SessionHost-DCR" `
+  -Location "eastus2" `
+  -InstallAma
+```
+
+Same as default, but also checks each session host VM for the Azure Monitor Agent extension and installs it where missing.
 
 ### Skip confirmation prompts (unsafe - for automation)
 

@@ -8,8 +8,8 @@
 .DESCRIPTION
   Builds a DCR that collects performance counters from AVD session hosts into both
   the InsightsMetrics and Perf tables in a Log Analytics workspace. The DCR defines
-  two performanceCounter data sources — one mapped to Microsoft-InsightsMetrics and
-  one mapped to Microsoft-Perf — with both streams flowing to the same LAW destination.
+  two performanceCounter data sources - one mapped to Microsoft-InsightsMetrics and
+  one mapped to Microsoft-Perf - with both streams flowing to the same LAW destination.
 
   After the DCR is created, the script scans the subscription for all AVD host pools
   and prompts the user to associate the DCR with:
@@ -45,23 +45,31 @@
 .PARAMETER TranscriptPath
   Optional path to save a transcript of the script execution.
 
-.PARAMETER SkipAmaInstall
-  Skip checking/installing Azure Monitor Agent (AMA) extension on session host VMs.
+.PARAMETER InstallAma
+  Also check and install Azure Monitor Agent (AMA) extension on session host VMs during DCR association.
+  Without this switch the script creates/updates the DCR and associates it but skips AMA install checks.
 
 .PARAMETER AmaOnly
   Run AMA validation/install workflow only. Skips LAW/DCR validation, DCR create/update, and DCR associations.
+  Implies -InstallAma.
 
 .PARAMETER WhatIf
   Built-in common parameter (SupportsShouldProcess). Preview changes without applying them.
 
 .EXAMPLE
-  # Create DCR, discover all host pools, and interactively associate
+  # Create DCR, discover all host pools, and interactively associate (no AMA install)
   .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
     -LawRG "rg-avd-monitoring" -LawName "law-avd-prod" -DcrRG "rg-avd-monitoring" `
     -DcrName "AVD-SessionHost-DCR" -Location "eastus2"
 
 .EXAMPLE
-  # WhatIf preview — no changes applied, host pools listed
+  # Same as above, but also install AMA on VMs that are missing it
+  .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
+    -LawRG "rg-avd-monitoring" -LawName "law-avd-prod" -DcrRG "rg-avd-monitoring" `
+    -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -InstallAma
+
+.EXAMPLE
+  # WhatIf preview - no changes applied, host pools listed
   .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
     -LawRG "rg-avd-monitoring" -LawName "law-avd-prod" -DcrRG "rg-avd-monitoring" `
     -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -WhatIf
@@ -156,7 +164,7 @@ param(
   [string]$TranscriptPath,
 
   [Parameter(Mandatory = $false)]
-  [switch]$SkipAmaInstall,
+  [switch]$InstallAma,
 
   [Parameter(Mandatory = $false)]
   [switch]$AmaOnly
@@ -243,6 +251,7 @@ function Install-AmaExtension {
 
   $global:LASTEXITCODE = 0
   $installErr = $null
+  $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
   $installOutput = az vm extension set `
     --resource-group $VmResourceGroup `
     --vm-name $VmName `
@@ -251,11 +260,13 @@ function Install-AmaExtension {
     --enable-auto-upgrade true `
     --only-show-errors `
     -o none 2>&1
-  if ($LASTEXITCODE -ne 0) {
+  $installExitCode = $LASTEXITCODE
+  $ErrorActionPreference = $prevEAP
+  if ($installExitCode -ne 0) {
     $installErr = $installOutput
   }
 
-  if ($LASTEXITCODE -ne 0) {
+  if ($installExitCode -ne 0) {
     return [PSCustomObject]@{
       Success = $false
       Error   = $installErr
@@ -278,8 +289,9 @@ if ($TranscriptPath) {
 }
 
 try {
-  if ($AmaOnly -and $SkipAmaInstall) {
-    throw "-AmaOnly cannot be combined with -SkipAmaInstall because there would be no AMA action to perform."
+  if ($AmaOnly) {
+    $InstallAma = [switch]::new($true)
+    Write-Verbose "-AmaOnly implies -InstallAma; AMA checks will run."
   }
 
   #region Prerequisites Check
@@ -324,13 +336,18 @@ try {
     Write-Verbose "Checking if DCR '$DcrName' exists..."
     $exists = $true
     $global:LASTEXITCODE = 0
-    $dcrCheckErr = az monitor data-collection rule show -g $DcrRG -n $DcrName -o none 2>&1
-    if ($LASTEXITCODE -ne 0) {
-      if ($dcrCheckErr -match "ResourceNotFound|could not be found|not found") {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $dcrCheckErr = az monitor data-collection rule show -g $DcrRG -n $DcrName -o none --only-show-errors 2>&1
+    $dcrCheckExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($dcrCheckExitCode -ne 0) {
+      $errText = ($dcrCheckErr | Out-String)
+      if ($errText -match "ResourceNotFound|could not be found|not found") {
         $exists = $false
         Write-Verbose "DCR does not exist; will create new."
       } else {
-        throw "Failed to check DCR existence for '$DcrName': $dcrCheckErr"
+        throw "Failed to check DCR existence for '$DcrName': $errText"
       }
     } else {
       Write-Verbose "DCR exists; will update."
@@ -342,7 +359,7 @@ try {
 
   if (-not $AmaOnly) {
     #region DCR Creation
-    # Consistent naming for DCR components (names must be ≤32 chars)
+    # Consistent naming for DCR components (names must be <=32 chars)
     $laName = "destination-LAW"
     $perfInsightsName = "datasource-InsightsMetrics"
     $perfTableName = "datasource-Perf"
@@ -406,7 +423,7 @@ try {
     if ($PSCmdlet.ShouldProcess("$DcrName in RG $DcrRG", "$action DCR")) {
       Write-Host "$action DCR $DcrName (Perf + InsightsMetrics)..." -ForegroundColor Cyan
 
-      # 'create' is idempotent (ARM PUT) — works for both new and existing DCRs
+      # 'create' is idempotent (ARM PUT) - works for both new and existing DCRs
       $global:LASTEXITCODE = 0
       az monitor data-collection rule create `
         --name $DcrName `
@@ -453,18 +470,21 @@ try {
   Write-Host "Scanning for AVD host pools in subscription..." -ForegroundColor Cyan
   $global:LASTEXITCODE = 0
   $hostPoolsErr = $null
+  $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
   $hostPoolsJson = az desktopvirtualization hostpool list `
     --query "[].{name:name, rg:resourceGroup}" `
     -o json --only-show-errors 2>&1
-  if ($LASTEXITCODE -ne 0) {
+  $hpExitCode = $LASTEXITCODE
+  $ErrorActionPreference = $prevEAP
+  if ($hpExitCode -ne 0) {
     $hostPoolsErr = $hostPoolsJson
   }
 
-  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($hostPoolsJson)) {
+  if ($hpExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($hostPoolsJson)) {
     Write-Warning "Could not enumerate host pools: $hostPoolsErr"
     Write-Warning "Skipping association."
   } else {
-  $hostPools = @($hostPoolsJson | ConvertFrom-Json)
+  [array]$hostPools = ($hostPoolsJson -join "`n") | ConvertFrom-Json
 
   if ($hostPools.Count -eq 0) {
     Write-Warning "No host pools found in subscription. Skipping association."
@@ -504,7 +524,7 @@ try {
             if ([int]::TryParse($idx.Trim(), [ref]$n) -and $n -ge 1 -and $n -le $hostPools.Count) {
               $selectedPools += $hostPools[$n - 1]
             } else {
-              Write-Warning "Invalid selection '$idx' — skipped."
+              Write-Warning "Invalid selection '$idx' - skipped."
             }
           }
         }
@@ -548,15 +568,18 @@ try {
 
           $global:LASTEXITCODE = 0
           $vmIdsErr = $null
+          $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
           $vmIdsRaw = az rest --method get `
             --uri "/subscriptions/$SubscriptionId/resourceGroups/$($pool.rg)/providers/Microsoft.DesktopVirtualization/hostPools/$($pool.name)/sessionHosts?api-version=2021-07-12" `
             --query "value[].properties.resourceId" `
             -o tsv 2>&1
-          if ($LASTEXITCODE -ne 0) {
+          $vmIdsExitCode = $LASTEXITCODE
+          $ErrorActionPreference = $prevEAP
+          if ($vmIdsExitCode -ne 0) {
             $vmIdsErr = $vmIdsRaw
           }
 
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vmIdsRaw)) {
+          if ($vmIdsExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($vmIdsRaw)) {
             Write-Warning "  Could not enumerate session hosts: $vmIdsErr"
             continue
           }
@@ -570,8 +593,8 @@ try {
             $assocName = "assoc-$DcrName-$vmName" # Unique per VM
 
             $vmInfo = Get-VMInfoFromResourceId -ResourceId $vmId
-            if ($SkipAmaInstall) {
-              Write-Verbose "Skipping AMA check/install for $vmName due to -SkipAmaInstall."
+            if (-not $InstallAma) {
+              Write-Verbose "Skipping AMA check/install for $vmName (use -InstallAma to enable)."
             } elseif (-not $vmInfo) {
               Write-Warning "    Unable to parse VM resource ID: $vmId"
               $amaCheckFailed++
@@ -623,9 +646,8 @@ try {
             } else { 
               0 
             }
-            Write-Progress -Activity "Associating DCR with Session Hosts" `
-              -Status ("Processing {0} ({1} of {2})" -f $vmName, $currentVM, $totalVMs) `
-              -PercentComplete $percentComplete
+            $statusMessage = ('Processing {0} ({1}/{2})' -f $vmName, $currentVM, $totalVMs)
+            Write-Progress -Activity "Associating DCR with Session Hosts" -Status $statusMessage -PercentComplete $percentComplete
 
             # Check if association already exists
             Write-Verbose "Checking existing association for $vmName..."
@@ -644,17 +666,20 @@ try {
             Write-Host "    Associating: $vmName" -ForegroundColor Gray
             $global:LASTEXITCODE = 0
             $assocErr = $null
+            $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
             $assocOutput = az monitor data-collection rule association create `
               --name $assocName `
               --resource $vmId `
               --rule-id $DcrId `
               --only-show-errors `
               -o none 2>&1
-            if ($LASTEXITCODE -ne 0) {
+            $assocExitCode = $LASTEXITCODE
+            $ErrorActionPreference = $prevEAP
+            if ($assocExitCode -ne 0) {
               $assocErr = $assocOutput
             }
 
-            if ($LASTEXITCODE -ne 0) {
+            if ($assocExitCode -ne 0) {
               Write-Warning "    Failed to associate DCR with $vmName"
               if ($assocErr) {
                 Write-Verbose "    Error details: $assocErr"
@@ -684,8 +709,8 @@ try {
             Write-Host "Failed: $totalFail" -ForegroundColor Yellow
           }
         }
-        if ($SkipAmaInstall) {
-          Write-Host "AMA check/install: skipped by parameter (-SkipAmaInstall)" -ForegroundColor DarkGray
+        if (-not $InstallAma) {
+          Write-Host "AMA check/install: skipped (use -InstallAma to enable)" -ForegroundColor DarkGray
         } else {
           Write-Host "AMA already installed: $amaAlreadyInstalled" -ForegroundColor DarkGray
           Write-Host "AMA installed by script: $amaInstalledNow" -ForegroundColor Green
@@ -711,6 +736,74 @@ try {
     Write-Host "  - InsightsMetrics"
     Write-Host "  - Perf"
   }
+
+  #region Next Steps Report
+  if (-not $AmaOnly -and $DcrId -and $DcrId -ne '<WhatIf-DcrId>') {
+    Write-Host ""
+    Write-Host "===============================================================================" -ForegroundColor Cyan
+    Write-Host " NEXT STEPS - Azure Policy for AMA Deployment" -ForegroundColor Cyan
+    Write-Host "===============================================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "To automatically install the Azure Monitor Agent on all session hosts," -ForegroundColor Yellow
+    Write-Host "assign the following built-in Azure Policy:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Policy: Configure Windows machines to run Azure Monitor Agent" -ForegroundColor White
+    Write-Host "          and associate them to a Data Collection Rule" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  DCR Resource Id to use as the policy parameter:" -ForegroundColor White
+    Write-Host "  $DcrId" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Assign the policy at the subscription or resource-group scope that" -ForegroundColor Yellow
+    Write-Host "contains your AVD session hosts." -ForegroundColor Yellow
+    Write-Host "===============================================================================" -ForegroundColor Cyan
+
+    # Generate README_NextSteps.txt
+    $nextStepsFile = Join-Path $PSScriptRoot "README_NextSteps.txt"
+    $nextStepsContent = @"
+================================================================================
+ NEXT STEPS - Azure Policy for Azure Monitor Agent (AMA) Deployment
+================================================================================
+
+After running AVD-Insights-Enable-PerfMetrics-Monitoring.ps1, the Data
+Collection Rule (DCR) has been created and associated with your host pools.
+
+To ensure the Azure Monitor Agent is installed (and stays installed) on every
+session host, assign the following built-in Azure Policy:
+
+  Policy name:
+    Configure Windows machines to run Azure Monitor Agent and associate
+    them to a Data Collection Rule
+
+  Policy definition ID:
+    /providers/Microsoft.Authorization/policyDefinitions/244efd75-0d92-453c-b9a3-7d73ca36ed52
+
+  DCR Resource Id (use as the policy parameter "dcrResourceId"):
+    $DcrId
+
+How to assign in the Azure Portal:
+  1. Go to Azure Policy > Definitions
+  2. Search for "Configure Windows machines to run Azure Monitor Agent"
+  3. Click the policy, then click "Assign"
+  4. Set the scope to the subscription or resource group(s) containing
+     your AVD session hosts
+  5. On the Parameters tab, paste the DCR Resource Id shown above
+  6. On the Remediation tab, check "Create a remediation task" to
+     install AMA on existing VMs
+  7. Review and create the assignment
+
+DCR Details:
+  Name:           $DcrName
+  Resource Group: $DcrRG
+  Location:       $Location
+
+Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC
+================================================================================
+"@
+    $nextStepsContent | Out-File -FilePath $nextStepsFile -Encoding utf8 -Force
+    Write-Host ""
+    Write-Host "Saved: $nextStepsFile" -ForegroundColor Green
+  }
+  #endregion
 } finally {
   if ($TranscriptPath) {
     try {
