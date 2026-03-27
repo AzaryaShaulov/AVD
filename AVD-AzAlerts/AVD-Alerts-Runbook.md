@@ -1,8 +1,6 @@
 # AVD Alerts — Operational Runbook
 
-<!-- markdownlint-configure-file {"MD024": {"siblings_only": true}, "MD031": false, "MD032": false, "MD060": false} -->
-
-Procedures for responding to `AVD-Category-*` alerts. Categories are sourced from multiple Log Analytics tables, including `WVDErrors`, `WVDConnections`, `WVDAgentHealthStatus`, `WVDConnectionNetworkData`, `WVDCheckpoints`, and optional `ConnectionGraphicsData`.
+Procedures for responding to `AVD-Category-*` alerts. All alerts fire from the **WVDErrors** table in Log Analytics when one or more matching error events occur within a 15-minute window.
 
 ---
 
@@ -517,7 +515,7 @@ Procedures for responding to `AVD-Category-*` alerts. Categories are sourced fro
    | order by AvgFrameDelay_ms desc
    ```
 2. Check if affected hosts have GPUs (NV/NC-series) — frame quality issues without GPU may be expected under heavy load
-3. Check GPU encoding time (if using the AVD-SessionHost-Insights-Alerts GPUPerformance category)
+3. Check GPU encoding time (if using AVD-Insights-Alerts GPUPerformance category)
 4. Check bandwidth and RTT — frame quality degrades with network constraints
 
 ### Resolution

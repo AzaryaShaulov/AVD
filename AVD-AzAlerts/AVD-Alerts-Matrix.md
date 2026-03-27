@@ -1,10 +1,8 @@
 # AVD Alerts Matrix
 
-<!-- markdownlint-configure-file {"MD060": false} -->
-
 Complete reference for all 16 `AVD-Category-*` scheduled query alerts: thresholds, query sources, and response guidance.
 
-Alerts query multiple Log Analytics tables (`WVDErrors`, `WVDConnections`, `WVDAgentHealthStatus`, `WVDConnectionNetworkData`, `WVDCheckpoints`, and optional `ConnectionGraphicsData`) with a 15-minute lookback window (`ago(15m)`), evaluated every 10 minutes. They fire when one or more matching rows are found (count > 0).
+All alerts query the **WVDErrors** table in Log Analytics with a 15-minute lookback window (`ago(15m)`), evaluated every 10 minutes. They fire when one or more matching rows are found (count > 0).
 
 ## AVD-Category-AuthenticationIdentity
 

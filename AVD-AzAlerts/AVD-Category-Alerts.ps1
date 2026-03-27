@@ -220,18 +220,11 @@ if ($placeholderParams.Count -gt 0) {
 #   - Microsoft.OperationalInsights/workspaces/read   (resolve LAW resource ID)
 #
 # Roles that satisfy all of the above:
-#   Alert scope        : Owner | Contributor | Monitoring Contributor on alert RG
-#   Workspace scope    : Owner | Contributor | Log Analytics Contributor/Reader on workspace
+#   Fully sufficient  : Owner | Contributor
+#   Partially sufficient (both needed together): Monitoring Contributor + Log Analytics Contributor/Reader
 Write-Host "[Pre-flight] Checking RBAC permissions..." -ForegroundColor Cyan
 
-$ResolvedWorkspaceResourceGroup = if ([string]::IsNullOrWhiteSpace($WorkspaceResourceGroupName)) {
-  $ResourceGroup
-} else {
-  $WorkspaceResourceGroupName
-}
-
 $rgScope = "/subscriptions/$($accountInfo.id)/resourceGroups/$ResourceGroup"
-$workspaceScope = "/subscriptions/$($accountInfo.id)/resourceGroups/$ResolvedWorkspaceResourceGroup/providers/Microsoft.OperationalInsights/workspaces/$WorkspaceName"
 
 # Determine the signed-in principal's object ID (works for user and service principal)
 $principalId = az ad signed-in-user show --query id -o tsv 2>$null
@@ -240,111 +233,75 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($principalId)) {
   $principalId = $accountInfo.user.name
 }
 
-# Built-in role IDs for programmatic matching (display names can be localised)
-$fullyQualifiedRoleIds = @(
-  '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'  # Owner
-  'b24988ac-6180-42a0-ab88-20f7382dd24c'  # Contributor
-)
-$monitoringContributorId = '749f88d5-cbae-40b8-bcfc-e573ddc772fa'
-$logAnalyticsContribId   = '92aaf0da-9dab-42b6-94a3-d43ce8d16293'
-$logAnalyticsReaderId    = '73c42c96-874c-492b-b04d-ab87d138a893'
-
-$canEvaluateAlertScope = $true
-$canEvaluateWorkspaceScope = $true
-
-$hasAlertManagementRole = $false
-$hasWorkspaceReadRole = $false
-
-$rgAssignedRoleNames = @()
-$workspaceAssignedRoleNames = @()
-
-# Fetch role assignments at alert RG scope
-$rgRoleAssignmentsJson = az role assignment list `
+# Fetch all role assignments at RG scope (inherited from sub/MG included)
+$roleAssignmentsJson = az role assignment list `
   --assignee $principalId `
   --scope $rgScope `
   --include-inherited `
   --include-groups `
   --output json 2>$null
 
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($rgRoleAssignmentsJson)) {
-  $canEvaluateAlertScope = $false
-  Write-Host "[Pre-flight] WARNING: Could not retrieve role assignments on alert RG scope '$rgScope'." -ForegroundColor Yellow
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($roleAssignmentsJson)) {
+  Write-Host "[Pre-flight] WARNING: Could not retrieve role assignments. Continuing, but ensure you have:" -ForegroundColor Yellow
+  Write-Host "  - Microsoft.Insights/scheduledQueryRules/* on RG '$ResourceGroup'" -ForegroundColor Yellow
+  Write-Host "  - Microsoft.Insights/actionGroups/* on RG '$ResourceGroup'" -ForegroundColor Yellow
+  Write-Host "  - Microsoft.OperationalInsights/workspaces/read on RG '$ResourceGroup'" -ForegroundColor Yellow
 } else {
-  $rgRoleAssignments = $rgRoleAssignmentsJson | ConvertFrom-Json
-  $rgAssignedRoleNames = @($rgRoleAssignments | Select-Object -ExpandProperty roleDefinitionName)
-  $rgAssignedRoleIds = $rgRoleAssignments | ForEach-Object {
+  $roleAssignments = $roleAssignmentsJson | ConvertFrom-Json
+  $assignedRoleNames = $roleAssignments | Select-Object -ExpandProperty roleDefinitionName
+
+  # Built-in role IDs for programmatic matching (display names can be localised)
+  $fullyQualifiedRoleIds = @(
+    '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'  # Owner
+    'b24988ac-6180-42a0-ab88-20f7382dd24c'  # Contributor
+  )
+  $monitoringContributorId   = '749f88d5-cbae-40b8-bcfc-e573ddc772fa'
+  $logAnalyticsContribId     = '92aaf0da-9dab-42b6-94a3-d43ce8d16293'
+  $logAnalyticsReaderId      = '73c42c96-874c-492b-b04d-ab87d138a893'
+
+  # Extract just the GUID portion from each roleDefinitionId
+  $assignedRoleIds = $roleAssignments | ForEach-Object {
     ($_.roleDefinitionId -split '/')[-1]
   }
 
-  $hasFullRoleOnRg = ($rgAssignedRoleIds | Where-Object { $fullyQualifiedRoleIds -contains $_ }).Count -gt 0
-  $hasMonitoringContribOnRg = $rgAssignedRoleIds -contains $monitoringContributorId
-  $hasAlertManagementRole = $hasFullRoleOnRg -or $hasMonitoringContribOnRg
-}
+  $hasFullRole            = ($assignedRoleIds | Where-Object { $fullyQualifiedRoleIds -contains $_ }).Count -gt 0
+  $hasMonitoringContrib   = $assignedRoleIds -contains $monitoringContributorId
+  $hasLAWContribOrReader  = ($assignedRoleIds -contains $logAnalyticsContribId) -or
+                             ($assignedRoleIds -contains $logAnalyticsReaderId)
 
-# Fetch role assignments at workspace scope
-$workspaceRoleAssignmentsJson = az role assignment list `
-  --assignee $principalId `
-  --scope $workspaceScope `
-  --include-inherited `
-  --include-groups `
-  --output json 2>$null
-
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($workspaceRoleAssignmentsJson)) {
-  $canEvaluateWorkspaceScope = $false
-  Write-Host "[Pre-flight] WARNING: Could not retrieve role assignments on workspace scope '$workspaceScope'." -ForegroundColor Yellow
-} else {
-  $workspaceRoleAssignments = $workspaceRoleAssignmentsJson | ConvertFrom-Json
-  $workspaceAssignedRoleNames = @($workspaceRoleAssignments | Select-Object -ExpandProperty roleDefinitionName)
-  $workspaceAssignedRoleIds = $workspaceRoleAssignments | ForEach-Object {
-    ($_.roleDefinitionId -split '/')[-1]
-  }
-
-  $hasFullRoleOnWorkspace = ($workspaceAssignedRoleIds | Where-Object { $fullyQualifiedRoleIds -contains $_ }).Count -gt 0
-  $hasLawContribOrReader = ($workspaceAssignedRoleIds -contains $logAnalyticsContribId) -or
-                           ($workspaceAssignedRoleIds -contains $logAnalyticsReaderId)
-  $hasWorkspaceReadRole = $hasFullRoleOnWorkspace -or $hasLawContribOrReader
-}
-
-if ($canEvaluateAlertScope -and $canEvaluateWorkspaceScope) {
-  if ($hasAlertManagementRole -and $hasWorkspaceReadRole) {
-    Write-Host "[Pre-flight] RBAC OK - alert management scope and workspace read scope are satisfied." -ForegroundColor Green
+  # ---- Evaluate coverage ----
+  if ($hasFullRole) {
+    $matchedRole = ($assignedRoleNames | Where-Object { $_ -in @('Owner','Contributor') } | Select-Object -First 1)
+    Write-Host "[Pre-flight] RBAC OK - '$matchedRole' covers all required permissions." -ForegroundColor Green
+  } elseif ($hasMonitoringContrib -and $hasLAWContribOrReader) {
+    Write-Host "[Pre-flight] RBAC OK - 'Monitoring Contributor' + Log Analytics role cover all required permissions." -ForegroundColor Green
   } else {
+    # Partial coverage - report exactly what is missing
     Write-Host "[Pre-flight] WARNING: Insufficient RBAC permissions detected." -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  Alert scope assignments ($rgScope):" -ForegroundColor Yellow
-    if ($rgAssignedRoleNames.Count -gt 0) {
-      $rgAssignedRoleNames | ForEach-Object { Write-Host "    - $_" -ForegroundColor Gray }
+    Write-Host ""  -ForegroundColor Yellow
+    Write-Host "  Assigned roles on scope '$rgScope':" -ForegroundColor Yellow
+    if ($assignedRoleNames.Count -gt 0) {
+      $assignedRoleNames | ForEach-Object { Write-Host "    - $_" -ForegroundColor Gray }
     } else {
       Write-Host "    (none found)" -ForegroundColor Gray
     }
-
-    Write-Host ""
-    Write-Host "  Workspace scope assignments ($workspaceScope):" -ForegroundColor Yellow
-    if ($workspaceAssignedRoleNames.Count -gt 0) {
-      $workspaceAssignedRoleNames | ForEach-Object { Write-Host "    - $_" -ForegroundColor Gray }
-    } else {
-      Write-Host "    (none found)" -ForegroundColor Gray
-    }
-
     Write-Host ""
     Write-Host "  Required permissions and recommended roles:" -ForegroundColor Yellow
-    if (-not $hasAlertManagementRole) {
+    if (-not $hasMonitoringContrib) {
       Write-Host "  [MISSING] Microsoft.Insights/scheduledQueryRules/* and Microsoft.Insights/actionGroups/*" -ForegroundColor Red
       Write-Host "            -> Assign 'Monitoring Contributor' on RG '$ResourceGroup'" -ForegroundColor Red
     }
-    if (-not $hasWorkspaceReadRole) {
+    if (-not $hasLAWContribOrReader) {
       Write-Host "  [MISSING] Microsoft.OperationalInsights/workspaces/read" -ForegroundColor Red
-      Write-Host "            -> Assign 'Log Analytics Reader' on workspace '$WorkspaceName'" -ForegroundColor Red
+      Write-Host "            -> Assign 'Log Analytics Reader' on RG '$ResourceGroup'" -ForegroundColor Red
     }
     Write-Host ""
     Write-Host "  Quick fix - run these Azure CLI commands:" -ForegroundColor Cyan
     Write-Host "    az role assignment create --assignee '$principalId' --role 'Monitoring Contributor' --scope '$rgScope'" -ForegroundColor Cyan
-    Write-Host "    az role assignment create --assignee '$principalId' --role 'Log Analytics Reader' --scope '$workspaceScope'" -ForegroundColor Cyan
+    Write-Host "    az role assignment create --assignee '$principalId' --role 'Log Analytics Reader'   --scope '$rgScope'" -ForegroundColor Cyan
     Write-Host ""
     throw "Insufficient RBAC permissions. Please assign the roles listed above and re-run the script."
   }
-} else {
-  Write-Host "[Pre-flight] WARNING: RBAC checks could not be fully evaluated from role assignments. Continuing with best-effort validation." -ForegroundColor Yellow
 }
 
 # Alert cadence
@@ -398,28 +355,6 @@ function Write-Log {
   param($Message, $Color = "White")
   $timestamp = Get-Date -Format "HH:mm:ss"
   Write-Host "[$timestamp] $Message" -ForegroundColor $Color
-}
-
-function ConvertTo-RedactedUrl {
-  param(
-    [string]$Url
-  )
-
-  if ([string]::IsNullOrWhiteSpace($Url)) {
-    return $Url
-  }
-
-  try {
-    $uri = [System.Uri]$Url
-    if ([string]::IsNullOrWhiteSpace($uri.Query)) {
-      return $Url
-    }
-
-    return ($uri.GetLeftPart([System.UriPartial]::Path) + "?***")
-  }
-  catch {
-    return "***"
-  }
 }
 
 function Test-AlertExists {
@@ -479,6 +414,12 @@ function Test-LawTableAvailable {
 # ----------------------------
 Write-Log "Resolving Log Analytics Workspace: $WorkspaceName" "Cyan"
 
+$ResolvedWorkspaceResourceGroup = if ([string]::IsNullOrWhiteSpace($WorkspaceResourceGroupName)) {
+  $ResourceGroup
+} else {
+  $WorkspaceResourceGroupName
+}
+
 $LawId = az monitor log-analytics workspace show `
   -g $ResolvedWorkspaceResourceGroup `
   -n $WorkspaceName `
@@ -495,8 +436,7 @@ Write-Log "Log Analytics Workspace ID: $LawId" "Gray"
 # Create / ensure Webhook Action Group
 # ----------------------------
 $DetailedAgId = $null
-$maskedDetailedWebhookUrl = ConvertTo-RedactedUrl -Url $DetailedResultsWebhookUrl
-Write-Log "Detailed Webhook URL: $maskedDetailedWebhookUrl" "Cyan"
+Write-Log "Detailed Webhook URL: $DetailedResultsWebhookUrl" "Cyan"
   Write-Log "Detailed Action Group: $DetailedActionGroupName" "Cyan"
 
   if ($PSCmdlet.ShouldProcess($DetailedActionGroupName, "Create or update detailed webhook action group")) {
@@ -696,14 +636,6 @@ $alertProcessingStart = Get-Date
 $lastStatusReport = $alertProcessingStart
 
 # Alert definitions
-$severityLabel = switch ($Severity) {
-  0 { "Critical" }
-  1 { "Error" }
-  2 { "Warning" }
-  3 { "Informational" }
-  4 { "Verbose" }
-}
-
 $alertDefinitions = @(
   @{ Name = "AVD-Category-AuthenticationIdentity"; Description = "Consolidated authentication and identity failures in AVD."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('PasswordMustChange', 'PasswordExpired', 'InvalidAuthToken', 'InvalidCredentials', 'AccountLockedOut', 'AccountDisabled', 'LogonFailed', 'AuthenticationLogonFailed', 'NoAuthenticatingAuthority', 'LocalSecurityAuthorityError')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
   @{ Name = "AVD-Category-AuthorizationPolicy"; Description = "Consolidated authorization and logon rights failures in AVD."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ConnectionFailedUserNotAuthorized', 'LogonTypeNotGranted', 'NotAuthorizedForLogon')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
@@ -735,7 +667,7 @@ if (-not $hasConnectionGraphicsData) {
   $script:AlertResults += [pscustomobject]@{
     AlertName   = $frameQualityAlertName
     Description = "[Preview] End-to-end frame delay or dropped frames exceeding threshold from ConnectionGraphicsData."
-    Severity    = "$Severity ($severityLabel)"
+    Severity    = "$Severity ($severityText)"
     Action      = "Skipped"
     Status      = "Skipped"
   }

@@ -1,17 +1,22 @@
 <#
 ==============================================================================
-SCRIPT VERSION: 1.2
-LAST UPDATED: March 12, 2026
+SCRIPT VERSION: 2.0
+LAST UPDATED: March 16, 2026
 REPOSITORY: https://github.com/AzaryaShaulov/AVD
 DISCLAIMER: This script is provided AS IS, without warranties or support guarantees.
 ==============================================================================
 .SYNOPSIS
-    Deploys and configures the AVD Logic App webhook notification pipeline.
+    Deploys and configures the AVD Insights Logic App webhook notification pipeline.
 
 .DESCRIPTION
-    Creates or updates the Logic App workflow, ensures the detailed webhook action group,
-    validates and authorizes required API connections, and configures alert routing so
-    AVD category alerts send detailed notifications through the webhook path.
+    Creates or updates the Logic App workflow, ensures the AVD-Insights-Detailed
+    webhook action group, validates and authorizes required API connections, and
+    configures alert routing so Insights performance alerts send detailed
+    notifications through the webhook path.
+
+    Follows the same patterns as AVD-Deploy-Alert-LogicApp.ps1 from
+    AVD-AzAlerts: bootstrap missing alerts, create/update action group, deploy
+    Logic App with managed identity, assign RBAC, and route alerts.
 
 .PARAMETER SubscriptionId
     Azure subscription ID to target. If omitted, uses the current Azure CLI context.
@@ -20,7 +25,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     Resource group where Logic App and related alert resources are deployed.
 
 .PARAMETER LogicAppName
-    Name of the Logic App workflow used for detailed AVD alert notifications.
+    Name of the Logic App workflow used for detailed AVD Insights notifications.
 
 .PARAMETER Location
     Azure region for deployment (for example: eastus2).
@@ -41,10 +46,10 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     Sender mailbox address used by the Office 365 connection.
 
 .PARAMETER Office365ConnectionName
-    Existing API connection name for Office 365 (default: office365).
+    Existing API connection name for Office 365 (default: avd-alerts-office365).
 
 .PARAMETER DetailedActionGroupName
-    Azure Monitor action group name for webhook-based detailed alerts.
+    Azure Monitor action group name for webhook-based detailed Insights alerts.
 
 .PARAMETER DetailedWebhookReceiverName
     Webhook receiver name created/updated inside the detailed action group.
@@ -57,13 +62,12 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
 
 .PARAMETER CsvPath
     Optional output path for post-run CSV summary report.
-    If omitted, defaults to .\avd-webhook-deploy-report-<subscriptionPrefix>.csv.
 
 .EXAMPLE
-    .\AVD-Deploy-Alert-LogicApp.ps1 `
+    .\AVD-Insights-Deploy-LogicApp.ps1 `
       -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
       -ResourceGroupName "rg-avd-monitoring" `
-      -LogicAppName "AVD-alert-details" `
+      -LogicAppName "AVD-Insights-Alert-Email" `
       -Location "eastus2" `
       -WorkspaceName "law-avd-prod" `
       -WorkspaceResourceGroupName "rg-avd-monitoring" `
@@ -71,29 +75,24 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
       -SendFromEmail "alerts@contoso.com" `
       -Office365ConnectionName "avd-alerts-office365"
 
-    Deploy webhook-based detailed notifications using a single recipient.
-
 .EXAMPLE
-    .\AVD-Deploy-Alert-LogicApp.ps1 `
+    .\AVD-Insights-Deploy-LogicApp.ps1 `
       -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
       -ResourceGroupName "rg-avd-monitoring" `
-      -LogicAppName "AVD-alert-details" `
+      -LogicAppName "AVD-Insights-Alert-Email" `
       -Location "eastus2" `
       -WorkspaceName "law-avd-prod" `
-      -WorkspaceResourceGroupName "rg-avd-monitoring" `
       -SendToEmails "avdops@contoso.com","noc@contoso.com" `
-      -SendFromEmail "alerts@contoso.com" `
-      -Office365ConnectionName "avd-alerts-office365"
-
-    Deploy with multiple recipients using -SendToEmails.
+      -SendFromEmail "alerts@contoso.com"
 
 .NOTES
     Script function summary:
-    - Deploys/updates Logic App workflow resources used for detailed alert notifications.
-    - Ensures AVD detailed action group webhook receiver is present and points to callback URL.
+    - Deploys/updates Logic App workflow resources used for detailed Insights notifications.
+    - Ensures AVD-Insights-Detailed action group webhook receiver is present and points to callback URL.
     - Assigns Log Analytics Reader to the Logic App managed identity for query access.
-    - Verifies required AVD-Category alerts exist and bootstraps them when missing.
-    - Applies detailed-only routing for AVD category alerts after webhook deployment.
+    - Verifies required AVD-Insights alerts exist and bootstraps them via AVD-Insights-Category-Alerts.ps1 when missing.
+    - Applies detailed-only routing for Insights alerts after webhook deployment.
+    - Reuses existing 'avd-alerts-office365' Office 365 API connection when available.
 
     Operational notes:
     - Requires Azure CLI login and permissions for Logic App, Monitor, and IAM changes.
@@ -126,9 +125,9 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$SendFromEmail,
 
-    [string]$Office365ConnectionName = "office365",
-    [string]$DetailedActionGroupName = "AVD-Alerts-Detailed",
-    [string]$DetailedWebhookReceiverName = "AVDAlertsDetailedWebhook",
+    [string]$Office365ConnectionName = "avd-alerts-office365",
+    [string]$DetailedActionGroupName = "AVD-Insights-Detailed",
+    [string]$DetailedWebhookReceiverName = "AVDInsightsDetailedWebhook",
     [string]$CsvPath = "",
     [hashtable]$Tags = @{},
     [switch]$UseHardCodedDefaults
@@ -151,14 +150,18 @@ $HardCoded = @{
     SendToEmails                = @()
     SendToEmail                 = ""
     SendFromEmail               = ""
-    Office365ConnectionName     = "office365"
-    DetailedActionGroupName     = "AVD-Alerts-Detailed"
-    DetailedWebhookReceiverName = "AVDAlertsDetailedWebhook"
+    Office365ConnectionName     = "avd-alerts-office365"
+    DetailedActionGroupName     = "AVD-Insights-Detailed"
+    DetailedWebhookReceiverName = "AVDInsightsDetailedWebhook"
     Tags                        = @{
-        Solution    = "AVD"
+        Solution    = "AVD-Insights"
         Environment = "Prod"
     }
 }
+
+# =========================
+# Helper Functions
+# =========================
 
 function Write-Step {
     param([string]$Message)
@@ -171,130 +174,89 @@ function Resolve-Setting {
         [string]$DefaultValue,
         [string]$Name
     )
-
-    if (-not [string]::IsNullOrWhiteSpace($Value)) {
-        return $Value
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($DefaultValue)) {
-        return $DefaultValue
-    }
-
+    if (-not [string]::IsNullOrWhiteSpace($Value)) { return $Value }
+    if (-not [string]::IsNullOrWhiteSpace($DefaultValue)) { return $DefaultValue }
     throw "Missing required value for '$Name'. Provide it as a parameter or populate the hard-coded defaults and use -UseHardCodedDefaults."
 }
 
-function Get-AlertDefinitionMap {
-    param(
-        [Parameter(Mandatory = $true)]
-        [array]$Definitions
-    )
-
-    $map = @{}
-    foreach ($definition in $Definitions) {
-        $map[$definition.Name] = @{
-            Description = $definition.Description
-            Kql         = $definition.Kql
-        }
-    }
-
-    return $map
-}
-
 function Invoke-AzCliJson {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string[]]$Arguments
-    )
-
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    if ($Arguments -notcontains '-o' -and $Arguments -notcontains '--output') {
+        $Arguments += @('-o', 'json')
+    }
     $result = & az @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI command failed: az $($Arguments -join ' ')`n$result"
-    }
-
-    if ([string]::IsNullOrWhiteSpace(($result | Out-String))) {
-        return $null
-    }
-
+    if ($LASTEXITCODE -ne 0) { throw "Azure CLI command failed: az $($Arguments -join ' ')`n$result" }
+    if ([string]::IsNullOrWhiteSpace(($result | Out-String))) { return $null }
     return ($result | Out-String | ConvertFrom-Json)
 }
 
 function Invoke-AzCliText {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string[]]$Arguments
-    )
-
+    param([Parameter(Mandatory)][string[]]$Arguments)
     $result = & az @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI command failed: az $($Arguments -join ' ')`n$result"
-    }
-
+    if ($LASTEXITCODE -ne 0) { throw "Azure CLI command failed: az $($Arguments -join ' ')`n$result" }
     return ($result | Out-String).Trim()
+}
+
+function Get-AlertDefinitionMap {
+    param([Parameter(Mandatory)][array]$Definitions)
+    $map = @{}
+    foreach ($def in $Definitions) {
+        $map[$def.Name] = @{
+            Description = $def.Description
+            Kql         = $def.Kql
+        }
+    }
+    return $map
 }
 
 function Set-DetailedActionGroupWebhook {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$SubscriptionId,
-        [Parameter(Mandatory = $true)]
-        [string]$ResourceGroupName,
-        [Parameter(Mandatory = $true)]
-        [string]$ActionGroupName,
-        [Parameter(Mandatory = $true)]
-        [string]$ReceiverName,
-        [Parameter(Mandatory = $true)]
-        [string]$ServiceUri
+        [Parameter(Mandatory)][string]$SubscriptionId,
+        [Parameter(Mandatory)][string]$ResourceGroupName,
+        [Parameter(Mandatory)][string]$ActionGroupName,
+        [Parameter(Mandatory)][string]$ReceiverName,
+        [Parameter(Mandatory)][string]$ServiceUri
     )
-
     $actionGroupId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/microsoft.insights/actionGroups/$ActionGroupName"
     $actionGroupUri = "${actionGroupId}?api-version=2023-01-01"
     $actionGroupBody = @{
-        location = 'Global'
+        location   = 'Global'
         properties = @{
-            groupShortName = 'AVDDetl'
-            enabled = $true
+            groupShortName   = 'AVDInsght'
+            enabled          = $true
             webhookReceivers = @(
                 @{
-                    name = $ReceiverName
-                    serviceUri = $ServiceUri
+                    name                 = $ReceiverName
+                    serviceUri           = $ServiceUri
                     useCommonAlertSchema = $true
                 }
             )
         }
     }
-
-    $tmpFile = Join-Path -Path $env:TEMP -ChildPath ("action-group-{0}-{1}.json" -f $ActionGroupName, [guid]::NewGuid().ToString('N'))
+    $tmpFile = Join-Path $env:TEMP ("action-group-{0}-{1}.json" -f $ActionGroupName, [guid]::NewGuid().ToString('N'))
     try {
         $actionGroupBody | ConvertTo-Json -Depth 20 | Set-Content -Path $tmpFile -Encoding utf8
         $result = & az rest --method put --uri $actionGroupUri --body "@$tmpFile" -o json 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to create/update action group '$ActionGroupName'`n$result"
-        }
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create/update action group '$ActionGroupName'`n$result" }
     }
     finally {
         Remove-Item -Path $tmpFile -ErrorAction SilentlyContinue
     }
 }
 
-function Set-AVDCategoryAlertsToDetailedOnly {
+function Set-InsightsAlertsToDetailedOnly {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$SubscriptionId,
-        [Parameter(Mandatory = $true)]
-        [string]$ResourceGroupName,
-        [Parameter(Mandatory = $true)]
-        [string]$DetailedActionGroupName
+        [Parameter(Mandatory)][string]$SubscriptionId,
+        [Parameter(Mandatory)][string]$ResourceGroupName,
+        [Parameter(Mandatory)][string]$DetailedActionGroupName
     )
-
     $detailedActionGroupId = Invoke-AzCliText -Arguments @(
         "monitor", "action-group", "show",
         "--resource-group", $ResourceGroupName,
         "--name", $DetailedActionGroupName,
         "--subscription", $SubscriptionId,
-        "--query", "id",
-        "-o", "tsv"
+        "--query", "id", "-o", "tsv"
     )
-
     if ([string]::IsNullOrWhiteSpace($detailedActionGroupId)) {
         throw "Failed to resolve action group ID for '$DetailedActionGroupName'."
     }
@@ -303,12 +265,11 @@ function Set-AVDCategoryAlertsToDetailedOnly {
         "monitor", "scheduled-query", "list",
         "--resource-group", $ResourceGroupName,
         "--subscription", $SubscriptionId,
-        "--query", "[?starts_with(name, 'AVD-Category-')].name",
+        "--query", "[?starts_with(name, 'AVD-Insights-')].name",
         "-o", "tsv"
     )
-
     if ([string]::IsNullOrWhiteSpace($alertNameOutput)) {
-        Write-Warning "No existing AVD-Category alert rules were found in resource group '$ResourceGroupName'."
+        Write-Warning "No existing AVD-Insights alert rules were found in resource group '$ResourceGroupName'."
         return
     }
 
@@ -324,7 +285,6 @@ function Set-AVDCategoryAlertsToDetailedOnly {
             --name $alertName `
             --subscription $SubscriptionId `
             --action-groups $detailedActionGroupId 2>&1
-
         if ($LASTEXITCODE -eq 0) {
             $updated++
             Write-Host "Updated '$alertName' to detailed-only action group." -ForegroundColor Gray
@@ -338,48 +298,36 @@ function Set-AVDCategoryAlertsToDetailedOnly {
     if ($failed.Count -gt 0) {
         throw "Updated $updated alert(s), but failed to update $($failed.Count): $($failed -join ', ')"
     }
-
-    Write-Host "All $updated AVD-Category alert(s) now use detailed-only action group '$DetailedActionGroupName'." -ForegroundColor Green
+    Write-Host "All $updated AVD-Insights alert(s) now use detailed-only action group '$DetailedActionGroupName'." -ForegroundColor Green
 }
 
-function Ensure-AVDCategoryAlertsExist {
+function Ensure-InsightsAlertsExist {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$SubscriptionId,
-        [Parameter(Mandatory = $true)]
-        [string]$ResourceGroupName,
-        [Parameter(Mandatory = $true)]
-        [string]$WorkspaceResourceGroupName,
-        [Parameter(Mandatory = $true)]
-        [string]$WorkspaceName,
-        [Parameter(Mandatory = $true)]
-        [string]$Location,
-        [Parameter(Mandatory = $true)]
-        [string]$DetailedActionGroupName,
-        [Parameter(Mandatory = $true)]
-        [string]$DetailedWebhookReceiverName,
-        [Parameter(Mandatory = $true)]
-        [string]$DetailedResultsWebhookUrl
+        [Parameter(Mandatory)][string]$SubscriptionId,
+        [Parameter(Mandatory)][string]$ResourceGroupName,
+        [Parameter(Mandatory)][string]$WorkspaceResourceGroupName,
+        [Parameter(Mandatory)][string]$WorkspaceName,
+        [Parameter(Mandatory)][string]$Location,
+        [Parameter(Mandatory)][string]$DetailedActionGroupName,
+        [Parameter(Mandatory)][string]$DetailedWebhookReceiverName,
+        [Parameter(Mandatory)][string]$DetailedResultsWebhookUrl
     )
 
-    # Guard: ensure scheduled-query extension is available before any az monitor scheduled-query calls
+    # Guard: ensure scheduled-query extension is available
     & az extension show --name scheduled-query -o none 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Installing 'scheduled-query' extension for bootstrap..." -ForegroundColor Yellow
         & az extension add --name scheduled-query --yes -o none 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Required Azure CLI extension 'scheduled-query' could not be installed."
-        }
+        if ($LASTEXITCODE -ne 0) { throw "Required Azure CLI extension 'scheduled-query' could not be installed." }
     }
 
     $existingAlertNamesOutput = Invoke-AzCliText -Arguments @(
         "monitor", "scheduled-query", "list",
         "--resource-group", $ResourceGroupName,
         "--subscription", $SubscriptionId,
-        "--query", "[?starts_with(name, 'AVD-Category-')].name",
+        "--query", "[?starts_with(name, 'AVD-Insights-')].name",
         "-o", "tsv"
     )
-
     $existingAlertNames = @()
     if (-not [string]::IsNullOrWhiteSpace($existingAlertNamesOutput)) {
         $existingAlertNames = $existingAlertNamesOutput -split "[\r\n]+" |
@@ -387,53 +335,55 @@ function Ensure-AVDCategoryAlertsExist {
             ForEach-Object { $_.Trim() }
     }
 
-    $requiredAlertNames = @(
-        'AVD-Category-AuthenticationIdentity',
-        'AVD-Category-AuthorizationPolicy',
-        'AVD-Category-ConnectionNetworkGateway',
-        'AVD-Category-SessionHostHealthCapacity',
-        'AVD-Category-PersonalDesktopAssignment',
-        'AVD-Category-DeviceGraphicsInput',
-        'AVD-Category-FSLogixProfileStorage',
-        'AVD-Category-UnknownUnclassified'
-    )
+    # Load required alert names from alerts-config.insights.json
+    $configPath = Join-Path $PSScriptRoot "alerts-config.insights.json"
+    if (-not (Test-Path $configPath)) {
+        throw "Could not find alerts-config.insights.json at '$configPath'."
+    }
+    $config = Get-Content $configPath -Raw | ConvertFrom-Json
+    $requiredAlertNames = @()
+    foreach ($catName in ($config.categories | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name)) {
+        foreach ($alertDef in $config.categories.$catName.alerts) {
+            $requiredAlertNames += $alertDef.name
+        }
+    }
 
     $missingAlertNames = $requiredAlertNames | Where-Object { $existingAlertNames -notcontains $_ }
     if ($missingAlertNames.Count -eq 0) {
-        Write-Host "All required AVD-Category alerts already exist; bootstrap creation is not required." -ForegroundColor Gray
+        Write-Host "All required AVD-Insights alerts already exist; bootstrap creation is not required." -ForegroundColor Gray
         return
     }
 
-    $coreAlertsScriptPath = Join-Path -Path $PSScriptRoot -ChildPath "AVD-Category-Alerts.ps1"
-    if (-not (Test-Path -Path $coreAlertsScriptPath)) {
-        throw "Could not find AVD-Category-Alerts.ps1 at '$coreAlertsScriptPath'."
+    $deployAlertsScript = Join-Path $PSScriptRoot "AVD-Insights-Category-Alerts.ps1"
+    if (-not (Test-Path $deployAlertsScript)) {
+        throw "Could not find AVD-Insights-Category-Alerts.ps1 at '$deployAlertsScript'."
     }
 
-    Write-Host "Detected $($missingAlertNames.Count) missing AVD-Category alert(s). Bootstrapping core alerts via AVD-Category-Alerts.ps1..." -ForegroundColor Yellow
+    Write-Host "Detected $($missingAlertNames.Count) missing AVD-Insights alert(s). Bootstrapping via AVD-Insights-Category-Alerts.ps1..." -ForegroundColor Yellow
 
-    & $coreAlertsScriptPath `
+    & $deployAlertsScript `
         -SubscriptionId $SubscriptionId `
         -ResourceGroup $ResourceGroupName `
-        -WorkspaceResourceGroupName $WorkspaceResourceGroupName `
         -WorkspaceName $WorkspaceName `
+        -WorkspaceResourceGroupName $WorkspaceResourceGroupName `
         -Location $Location `
-        -DetailedActionGroupName $DetailedActionGroupName `
-        -DetailedWebhookReceiverName $DetailedWebhookReceiverName `
-        -DetailedResultsWebhookUrl $DetailedResultsWebhookUrl `
+        -ActionGroupName $DetailedActionGroupName `
+        -WebhookUrl $DetailedResultsWebhookUrl `
+        -WebhookReceiverName $DetailedWebhookReceiverName `
         -CreateOnly $true
 
     if ($LASTEXITCODE -ne 0) {
-        throw "Bootstrap alert creation via AVD-Category-Alerts.ps1 failed."
+        throw "Bootstrap alert creation via AVD-Insights-Category-Alerts.ps1 failed."
     }
 
+    # Verify bootstrap result
     $postBootstrapOutput = Invoke-AzCliText -Arguments @(
         "monitor", "scheduled-query", "list",
         "--resource-group", $ResourceGroupName,
         "--subscription", $SubscriptionId,
-        "--query", "[?starts_with(name, 'AVD-Category-')].name",
+        "--query", "[?starts_with(name, 'AVD-Insights-')].name",
         "-o", "tsv"
     )
-
     $postBootstrapAlertNames = @()
     if (-not [string]::IsNullOrWhiteSpace($postBootstrapOutput)) {
         $postBootstrapAlertNames = $postBootstrapOutput -split "[\r\n]+" |
@@ -445,8 +395,7 @@ function Ensure-AVDCategoryAlertsExist {
     if ($stillMissing.Count -gt 0) {
         throw "Bootstrap completed but required alerts are still missing: $($stillMissing -join ', ')"
     }
-
-    Write-Host "Bootstrap complete: required AVD-Category alerts now exist." -ForegroundColor Green
+    Write-Host "Bootstrap complete: required AVD-Insights alerts now exist." -ForegroundColor Green
 }
 
 # =========================
@@ -458,7 +407,7 @@ if ($UseHardCodedDefaults) {
     $LogicAppName               = Resolve-Setting -Value $LogicAppName              -DefaultValue $HardCoded.LogicAppName               -Name "LogicAppName"
     $Location                   = Resolve-Setting -Value $Location                  -DefaultValue $HardCoded.Location                   -Name "Location"
     $WorkspaceName              = Resolve-Setting -Value $WorkspaceName             -DefaultValue $HardCoded.WorkspaceName              -Name "WorkspaceName"
-    $WorkspaceResourceGroupName = Resolve-Setting -Value $WorkspaceResourceGroupName-DefaultValue $HardCoded.WorkspaceResourceGroupName -Name "WorkspaceResourceGroupName"
+    $WorkspaceResourceGroupName = Resolve-Setting -Value $WorkspaceResourceGroupName -DefaultValue $HardCoded.WorkspaceResourceGroupName -Name "WorkspaceResourceGroupName"
     $SendFromEmail              = Resolve-Setting -Value $SendFromEmail             -DefaultValue $HardCoded.SendFromEmail              -Name "SendFromEmail"
 
     if (($SendToEmails.Count -eq 0) -and [string]::IsNullOrWhiteSpace($SendToEmail)) {
@@ -473,15 +422,12 @@ if ($UseHardCodedDefaults) {
     if ([string]::IsNullOrWhiteSpace($Office365ConnectionName)) {
         $Office365ConnectionName = $HardCoded.Office365ConnectionName
     }
-
     if ([string]::IsNullOrWhiteSpace($DetailedActionGroupName)) {
         $DetailedActionGroupName = $HardCoded.DetailedActionGroupName
     }
-
     if ([string]::IsNullOrWhiteSpace($DetailedWebhookReceiverName)) {
         $DetailedWebhookReceiverName = $HardCoded.DetailedWebhookReceiverName
     }
-
     if (-not $Tags -or $Tags.Count -eq 0) {
         $Tags = $HardCoded.Tags
     }
@@ -500,7 +446,7 @@ else {
     }
 }
 
-# Normalize recipients from both parameters. Supports either array input or ';' / ',' delimited strings.
+# Normalize recipients
 $ResolvedSendToEmails = @($SendToEmails)
 if (-not [string]::IsNullOrWhiteSpace($SendToEmail)) {
     $ResolvedSendToEmails += $SendToEmail
@@ -515,112 +461,106 @@ $ResolvedSendToEmails = @(
 if ($ResolvedSendToEmails.Count -eq 0) {
     throw "No valid recipients were resolved from 'SendToEmails' or 'SendToEmail'."
 }
-# JSON-escape email values to prevent special characters from breaking workflow definition
 $SendToEmailValue = (($ResolvedSendToEmails | ForEach-Object { $_ -replace '\\', '\\' -replace '"', '\"' }) -join ';')
 $SendFromEmail = $SendFromEmail -replace '\\', '\\' -replace '"', '\"'
 
 if ([string]::IsNullOrWhiteSpace($Office365ConnectionName)) {
-    $Office365ConnectionName = "office365"
+    $Office365ConnectionName = "avd-alerts-office365"
 }
 if ([string]::IsNullOrWhiteSpace($DetailedActionGroupName)) {
-    $DetailedActionGroupName = "AVD-Alerts-Detailed"
+    $DetailedActionGroupName = "AVD-Insights-Detailed"
 }
 if ([string]::IsNullOrWhiteSpace($DetailedWebhookReceiverName)) {
-    $DetailedWebhookReceiverName = "AVDAlertsDetailedWebhook"
+    $DetailedWebhookReceiverName = "AVDInsightsDetailedWebhook"
 }
-if (-not $Tags) {
-    $Tags = @{}
-}
+if (-not $Tags) { $Tags = @{} }
 
 if ([string]::IsNullOrWhiteSpace($CsvPath)) {
     $subPrefix = if ($SubscriptionId.Length -ge 8) { $SubscriptionId.Substring(0, 8) } else { $SubscriptionId }
-    $CsvPath = ".\\avd-webhook-deploy-report-$subPrefix.csv"
+    $CsvPath = ".\avd-insights-logicapp-report-$subPrefix.csv"
 }
 
 $Office365ConnectionStatus = "Unknown"
 $RoleAssignmentStatus = "Unknown"
 
+# =========================
+# Pre-flight Checks
+# =========================
 Write-Step "Checking Azure CLI login"
 & az account show | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "Azure CLI is not logged in. Run 'az login' first."
-}
+if ($LASTEXITCODE -ne 0) { throw "Azure CLI is not logged in. Run 'az login' first." }
 
 Write-Step "Setting Azure subscription"
 & az account set --subscription $SubscriptionId
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to set Azure subscription to $SubscriptionId"
-}
+if ($LASTEXITCODE -ne 0) { throw "Failed to set Azure subscription to $SubscriptionId" }
 
 Write-Step "Ensuring required CLI extension: scheduled-query"
 & az extension show --name scheduled-query -o none 2>$null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Installing 'scheduled-query' extension..." -ForegroundColor Yellow
     & az extension add --name scheduled-query --yes -o none 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Required Azure CLI extension 'scheduled-query' could not be installed."
-    }
+    if ($LASTEXITCODE -ne 0) { throw "Required Azure CLI extension 'scheduled-query' could not be installed." }
     Write-Host "'scheduled-query' extension installed." -ForegroundColor Green
-} else {
+}
+else {
     Write-Host "'scheduled-query' extension is available." -ForegroundColor Gray
 }
 
 Write-Step "Ensuring Logic App resource group exists"
-$rgExists = Invoke-AzCliText -Arguments @("group","exists","--name",$ResourceGroupName)
+$rgExists = Invoke-AzCliText -Arguments @("group", "exists", "--name", $ResourceGroupName)
 if ($rgExists -eq "false") {
     $tagArgs = @()
     if ($Tags.Count -gt 0) {
         $flatTags = $Tags.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
         $tagArgs = @("--tags") + $flatTags
     }
-
     & az group create --name $ResourceGroupName --location $Location @tagArgs | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to create resource group $ResourceGroupName"
-    }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create resource group $ResourceGroupName" }
 }
 
+# =========================
+# Resolve Log Analytics Workspace
+# =========================
 Write-Step "Resolving Log Analytics workspace by workspace name"
 $workspace = Invoke-AzCliJson -Arguments @(
-    "monitor","log-analytics","workspace","show",
-    "--resource-group",$WorkspaceResourceGroupName,
-    "--workspace-name",$WorkspaceName
+    "monitor", "log-analytics", "workspace", "show",
+    "--resource-group", $WorkspaceResourceGroupName,
+    "--workspace-name", $WorkspaceName
 )
-
 if (-not $workspace) {
     throw "Workspace '$WorkspaceName' in resource group '$WorkspaceResourceGroupName' was not found."
 }
 
-$WorkspaceId = $workspace.customerId
+$WorkspaceId         = $workspace.customerId
 $WorkspaceResourceId = $workspace.id
-
 if ([string]::IsNullOrWhiteSpace($WorkspaceId) -or [string]::IsNullOrWhiteSpace($WorkspaceResourceId)) {
     throw "Could not resolve WorkspaceId or WorkspaceResourceId from workspace '$WorkspaceName'."
 }
-
 Write-Host "Workspace Name: $WorkspaceName"
 Write-Host "Workspace GUID: $WorkspaceId"
 Write-Host "Workspace Resource ID: $WorkspaceResourceId"
 
+# =========================
+# Ensure Office 365 API connection
+# =========================
+Write-Step "Ensuring Office 365 API connection exists"
+
 $Office365ConnectionResourceId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Web/connections/$Office365ConnectionName"
 $Office365ManagedApiId = "/subscriptions/$SubscriptionId/providers/Microsoft.Web/locations/$Location/managedApis/office365"
 
-Write-Step "Ensuring Office 365 API connection exists"
-$existingConnectionJson = $null
 $existingConnectionJson = & az resource show --ids $Office365ConnectionResourceId -o json 2>&1
 $existingConnectionExitCode = $LASTEXITCODE
 
 if ($existingConnectionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($existingConnectionJson | Out-String))) {
     Write-Host "Office 365 connection '$Office365ConnectionName' not found - creating..."
     $connBody = @{
-        location = $Location
+        location   = $Location
         properties = @{
             displayName = $Office365ConnectionName
-            api = @{ id = $Office365ManagedApiId }
+            api         = @{ id = $Office365ManagedApiId }
         }
     }
-
-    $connTmpFile = Join-Path -Path $env:TEMP -ChildPath ("office365-connection-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $connTmpFile = Join-Path $env:TEMP ("office365-connection-{0}.json" -f [guid]::NewGuid().ToString('N'))
     try {
         $connBody | ConvertTo-Json -Depth 20 | Set-Content -Path $connTmpFile -Encoding utf8
         $connUri = "${Office365ConnectionResourceId}?api-version=2016-06-01"
@@ -632,7 +572,6 @@ if ($existingConnectionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($existin
     finally {
         Remove-Item -Path $connTmpFile -ErrorAction SilentlyContinue
     }
-
     Write-Host "Office 365 connection '$Office365ConnectionName' created. Authorize it in Azure Portal if prompted."
     $Office365ConnectionStatus = "Created"
 }
@@ -641,340 +580,154 @@ else {
     $Office365ConnectionStatus = "Existing"
 }
 
-$defaultAlertDefinitionName = "AVD-Category-DefaultFallback"
+# =========================
+# Build Insights Alert Definition Map
+# =========================
+# Each Insights alert name maps to a category-specific re-query KQL and description.
+# When the Logic App receives a webhook, it looks up the alert rule name to run
+# the appropriate Perf / WVDCheckpoints / Event query for the email body.
 
-$commonProjection = @"
-| project
-    TimeGenerated = column_ifexists('TimeGenerated', datetime(null)),
-    UserName = column_ifexists('UserName', ''),
-    Source = column_ifexists('Source', ''),
-    Code = column_ifexists('Code', ''),
-    CodeSymbolic = column_ifexists('CodeSymbolic', ''),
-    Message = column_ifexists('Message', ''),
-    Operation = column_ifexists('Operation', ''),
-    _ResourceId = column_ifexists('_ResourceId', '')
-"@
+$defaultFallbackName = "AVD-Insights-DefaultFallback"
 
 $alertDefinitions = @(
+    # --- Category: SessionQuality ---
     @{
-        Name        = "AVD-Category-AuthenticationIdentity"
-        Description = "Consolidated authentication and identity failures in AVD."
+        Name        = "AVD-Insights-Category-SessionQuality"
+        Description = "Session-quality category alert: InputDelay (Process/Session), RoundTripLatency, UDPBandwidth."
         Kql         = @"
-WVDErrors
+Perf
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
-| where CodeSymbolic in (
-    'PasswordMustChange',
-    'PasswordExpired',
-    'InvalidAuthToken',
-    'InvalidCredentials',
-    'AccountLockedOut',
-    'AccountDisabled',
-    'LogonFailed',
-    'AuthenticationLogonFailed',
-    'NoAuthenticatingAuthority',
-    'LocalSecurityAuthorityError'
-)
-$commonProjection
-| order by TimeGenerated desc
+| where ObjectName in ('User Input Delay per Process','User Input Delay per Session','RemoteFX Network')
+| summarize AvgValue=round(avg(CounterValue),1), MaxValue=round(max(CounterValue),1), Samples=count() by Computer, ObjectName, CounterName
+| extend Status = case(ObjectName has 'Input Delay' and AvgValue > 200, 'CRITICAL', CounterName has 'Round Trip' and AvgValue > 150, 'WARNING', CounterName has 'UDP' and AvgValue < 500, 'WARNING', 'OK')
+| order by Status asc, MaxValue desc
+| limit 50
+"@
+    }
+
+    # --- Category: HostPerformance ---
+    @{
+        Name        = "AVD-Insights-Category-HostPerformance"
+        Description = "Host-performance category alert: CPU, Memory, MemoryCommit, Pages, PageFaults, DiskTiming."
+        Kql         = @"
+Perf
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| where ObjectName in ('Processor Information','Memory','LogicalDisk','PhysicalDisk')
+| where CounterName in ('% Processor Time','Available MBytes','% Committed Bytes In Use','Pages/sec','Page Faults/sec','Avg. Disk sec/Read','Avg. Disk sec/Write')
+    or CounterName has 'Disk sec/'
+| summarize AvgValue=round(avg(CounterValue),1), MaxValue=round(max(CounterValue),1), Samples=count() by Computer, ObjectName, CounterName
+| extend Status = case(CounterName == '% Processor Time' and AvgValue > 90, 'CRITICAL', CounterName == 'Available MBytes' and AvgValue < 512, 'CRITICAL', CounterName == '% Committed Bytes In Use' and AvgValue > 80, 'WARNING', CounterName == 'Pages/sec' and AvgValue > 100, 'WARNING', CounterName has 'Disk sec/' and AvgValue > 0.025, 'WARNING', 'OK')
+| order by Status asc, Computer asc
 | limit 100
 "@
     }
 
+    # --- Category: DiskHealth ---
     @{
-        Name        = "AVD-Category-AuthorizationPolicy"
-        Description = "Consolidated authorization and logon rights failures in AVD."
+        Name        = "AVD-Insights-Category-DiskHealth"
+        Description = "Disk-health category alert: DiskQueueLength, DiskFreeSpace."
         Kql         = @"
-WVDErrors
+Perf
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
-| where CodeSymbolic in (
-    'ConnectionFailedUserNotAuthorized',
-    'LogonTypeNotGranted',
-    'NotAuthorizedForLogon'
-)
-$commonProjection
-| order by TimeGenerated desc
+| where (ObjectName in ('LogicalDisk','PhysicalDisk') and CounterName has 'Queue Length')
+    or (ObjectName == 'LogicalDisk' and CounterName in ('% Free Space','Free Megabytes'))
+| summarize AvgValue=round(avg(CounterValue),1), MaxValue=round(max(CounterValue),1), MinValue=round(min(CounterValue),1), Samples=count() by Computer, ObjectName, CounterName, InstanceName
+| extend Status = case(CounterName has 'Queue Length' and AvgValue > 5, 'WARNING', CounterName == '% Free Space' and MinValue < 10, 'CRITICAL', 'OK')
+| order by Status asc, Computer asc
 | limit 100
 "@
     }
 
+    # --- Category: SessionLifecycle ---
     @{
-        Name        = "AVD-Category-ConnectionNetworkGateway"
-        Description = "Consolidated AVD client, DNS, reverse connect, and gateway transport failures."
+        Name        = "AVD-Insights-Category-SessionLifecycle"
+        Description = "Session-lifecycle category alert: SignInDegradation, CapacityPressure, SessionImbalance."
         Kql         = @"
-WVDErrors
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| where CodeSymbolic in (
-    'Client',
-    'DnsLookupFailed',
-    'GatewayServerNotFound',
-    'ReverseConnectDnsLookupFailed',
-    'ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed',
-    'ConnectionFailedServerDisconnect',
-    'ConnectionFailedClientDisconnect',
-    'ReverseConnectSChannelFailure'
-)
-$commonProjection
-| order by TimeGenerated desc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-SessionHostHealthCapacity"
-        Description = "Consolidated session host availability and capacity issues."
-        Kql         = @"
-WVDErrors
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| where CodeSymbolic in (
-    'ConnectionFailedNoHealthyRdshAvailable',
-    'SessionHostResourceNotAvailable',
-    'OutOfMemory'
-)
-$commonProjection
-| order by TimeGenerated desc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-PersonalDesktopAssignment"
-        Description = "Consolidated personal desktop assignment and startup failures."
-        Kql         = @"
-WVDErrors
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| where CodeSymbolic in (
-    'ConnectionFailedPersonalDesktopFailedToBeStarted',
-    'ConnectionFailedNoPreAssignedPersonalDesktopForUser'
-)
-$commonProjection
-| order by TimeGenerated desc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-DeviceGraphicsInput"
-        Description = "Consolidated input and graphics subsystem failures."
-        Kql         = @"
-WVDErrors
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| where CodeSymbolic in (
-    'GetInputDeviceHandlesError',
-    'GraphicsCapsNotReceived',
-    'GraphicsSubsystemFailed',
-    'DWMProcessAccessFailure'
-)
-$commonProjection
-| order by TimeGenerated desc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-FSLogixProfileStorage"
-        Description = "Consolidated FSLogix profile and storage attach/detach/access issues."
-        Kql         = @"
-WVDErrors
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| where
-    CodeSymbolic in (
-        'ERROR_SHARING_VIOLATION',
-        'UnloadWaitingForUserAction',
-        'ERROR_ACCESS_DENIED',
-        'ERROR_PATH_NOT_FOUND',
-        'ERROR_FILE_NOT_FOUND',
-        'ERROR_BAD_NETPATH',
-        'ERROR_BAD_NET_NAME',
-        'ERROR_NETNAME_DELETED',
-        'ERROR_DISK_FULL',
-        'ERROR_LOCK_VIOLATION'
-    )
-    or Source contains 'fslogix'
-    or Message has_any (
-        'frxsvc',
-        'frxshell',
-        'temporary profile',
-        'default profile',
-        'profile failed',
-        'vhd attach',
-        'vhdx attach',
-        'container attach',
-        'container detach',
-        'odfc'
-    )
-$commonProjection
-| order by TimeGenerated desc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-UnknownUnclassified"
-        Description = "Consolidated unknown or unclassified AVD error symbols for triage."
-        Kql         = @"
-WVDErrors
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| where CodeSymbolic == 'Unknown CodeSymbolic - review Message for details.'
-$commonProjection
-| order by TimeGenerated desc
-| limit 100
-"@
-    }
-
-    # --- WVD Diagnostic Log alerts (non-WVDErrors tables) ---
-
-    @{
-        Name        = "AVD-Category-ConnectionFailureRate"
-        Description = "Spike in failed connections per host pool from WVDConnections."
-        Kql         = @"
-WVDConnections
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| where State == 'Failed'
-| extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| summarize FailedCount = count() by HostPool, UserName
-| where FailedCount > 5
-| project HostPool, UserName, FailedCount
-| order by FailedCount desc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-DisconnectionSpike"
-        Description = "Abnormal disconnection rate across session hosts indicating infrastructure or network instability."
-        Kql         = @"
-WVDConnections
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| where State == 'Completed'
-| where ConnectionType == 'Disconnected'
-| extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| summarize DisconnectCount = count() by HostPool, SessionHostName
-| where DisconnectCount > 10
-| project HostPool, SessionHostName, DisconnectCount
-| order by DisconnectCount desc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-UnhealthyHosts"
-        Description = "Session hosts reporting non-Available status from WVDAgentHealthStatus."
-        Kql         = @"
-WVDAgentHealthStatus
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| summarize arg_max(TimeGenerated, *) by SessionHostName
-| where Status != 'Available'
-| extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| project HostPool, SessionHostName, Status, LastHeartBeat = TimeGenerated
-| order by LastHeartBeat asc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-StaleHeartbeat"
-        Description = "Session hosts with stale agent heartbeat indicating communication failure or zombie hosts."
-        Kql         = @"
-WVDAgentHealthStatus
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| summarize arg_max(TimeGenerated, *) by SessionHostName
-| where TimeGenerated < ago(5m)
-| extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| extend StaleSinceMin = datetime_diff('minute', now(), TimeGenerated)
-| project HostPool, SessionHostName, Status, StaleSinceMin
-| order by StaleSinceMin desc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-BandwidthDrop"
-        Description = "Per-connection estimated bandwidth drops below threshold from WVDConnectionNetworkData."
-        Kql         = @"
-WVDConnectionNetworkData
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| summarize P10BW = percentile(EstAvailableBandwidthKBps, 10) by CorrelationId
-| where P10BW < 500
-| join kind=inner (
-    WVDConnections
-    | where TimeGenerated between (datetime({0}) .. datetime({1}))
-    | project CorrelationId, UserName, SessionHostName, _ResourceId
-) on CorrelationId
-| extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| project HostPool, UserName, SessionHostName, P10BW_KBps = round(P10BW, 0)
-| order by P10BW_KBps asc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-RTTPerUser"
-        Description = "Per-user P95 round-trip time exceeds threshold from WVDConnectionNetworkData."
-        Kql         = @"
-WVDConnectionNetworkData
-| where TimeGenerated between (datetime({0}) .. datetime({1}))
-| summarize P95RTT = percentile(EstRoundTripTimeInMs, 95) by CorrelationId
-| where P95RTT > 200
-| join kind=inner (
-    WVDConnections
-    | where TimeGenerated between (datetime({0}) .. datetime({1}))
-    | project CorrelationId, UserName, SessionHostName, _ResourceId
-) on CorrelationId
-| extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| project HostPool, UserName, SessionHostName, P95RTT_ms = round(P95RTT, 0)
-| order by P95RTT_ms desc
-| limit 100
-"@
-    }
-
-    @{
-        Name        = "AVD-Category-SignInPhaseDelay"
-        Description = "Prolonged sign-in phases detected from WVDCheckpoints (profile load, GPO, shell start)."
-        Kql         = @"
-WVDCheckpoints
+union isfuzzy=true
+(WVDCheckpoints
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where Source == 'WVDConnections'
-| where Name in ('OnConnected', 'ShellReady', 'LoadProfile', 'ApplyGroupPolicy')
-| extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| extend DurationSec = datetime_diff('second', TimeGenerated, todatetime(tostring(Parameters.StartTime)))
-| where DurationSec > 15
-| project HostPool, UserName, Name, DurationSec, SessionHostName = tostring(Parameters.SessionHostName)
-| order by DurationSec desc
+| summarize StartTime=min(TimeGenerated), EndTime=max(TimeGenerated) by CorrelationId, UserName, SessionHostName=tostring(Parameters.SessionHostName)
+| extend DurationMs=datetime_diff('millisecond', EndTime, StartTime)
+| where DurationMs > 0
+| summarize AvgDurationSec=round(avg(DurationMs)/1000.0,1), MaxDurationSec=round(max(DurationMs)/1000.0,1), Sessions=count() by SessionHostName
+| project Computer=SessionHostName, Signal='SignInDegradation', AvgDurationSec, MaxDurationSec, Sessions, Status=iff(AvgDurationSec > 30, 'CRITICAL', 'OK')),
+(WVDAgentHealthStatus
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| where Status == 'Available' and isnotempty(ActiveSessions)
+| summarize LatestSessions=arg_max(TimeGenerated, ActiveSessions, AllowNewSessions) by SessionHostName
+| project Computer=SessionHostName, Signal='CapacityPressure', ActiveSessions, AllowNewSessions, Status='WARNING'),
+(Perf
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| where ObjectName == 'Terminal Services' and CounterName in ('Active Sessions','Inactive Sessions','Total Sessions')
+| summarize Value=round(avg(CounterValue),0) by Computer, CounterName
+| evaluate pivot(CounterName, take_any(Value))
+| project Computer, Signal='SessionImbalance', ActiveSessions=column_ifexists('Active Sessions',0), InactiveSessions=column_ifexists('Inactive Sessions',0), TotalSessions=column_ifexists('Total Sessions',0), Status=iff(column_ifexists('Inactive Sessions',0) * 2 > max_of(column_ifexists('Total Sessions',0), 1) and column_ifexists('Total Sessions',0) >= 2, 'WARNING', 'OK'))
 | limit 100
 "@
     }
 
+    # --- Category: CorrelatedSignals ---
     @{
-        Name        = "AVD-Category-FrameQualityDegradation"
-        Description = "[Preview] End-to-end frame delay or dropped frames exceeding threshold from ConnectionGraphicsData."
+        Name        = "AVD-Insights-Category-CorrelatedSignals"
+        Description = "Correlated-signals category alert: multi-signal host degradation and FSLogix correlation."
         Kql         = @"
-ConnectionGraphicsData
+union isfuzzy=true
+(Perf
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
-| summarize AvgFrameDelay = avg(EstEndToEndDelayInMs), DropPct = avg(FramesSkippedPercentage) by CorrelationId
-| where AvgFrameDelay > 300 or DropPct > 15
-| join kind=inner (
-    WVDConnections
-    | where TimeGenerated between (datetime({0}) .. datetime({1}))
-    | project CorrelationId, UserName, SessionHostName, _ResourceId
-) on CorrelationId
-| extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| project HostPool, UserName, SessionHostName, AvgFrameDelay_ms = round(AvgFrameDelay, 0), DroppedFramesPct = round(DropPct, 1)
-| order by AvgFrameDelay_ms desc
+| where ObjectName in ('Processor Information','Memory','LogicalDisk','PhysicalDisk')
+| summarize AvgValue=round(avg(CounterValue),1), MaxValue=round(max(CounterValue),1), Samples=count() by Computer, ObjectName, CounterName
+| extend Status = case(CounterName == '% Processor Time' and AvgValue > 90, 'CRITICAL', CounterName == 'Available MBytes' and AvgValue < 512, 'CRITICAL', CounterName has 'Disk sec/' and AvgValue > 0.025, 'WARNING', 'OK')),
+(Event
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| where Source has 'FSLogix' or EventLog has 'FSLogix'
+| summarize EventCount=count() by Computer, Source, EventID, RenderedDescription=strcat(take(RenderedDescription,200),'...')
+| extend Status = 'WARNING')
 | limit 100
 "@
     }
 
-    # --- Fallback ---
-
+    # --- Category: EventLogAlerts ---
     @{
-        Name        = "AVD-Category-DefaultFallback"
-        Description = "Fallback WVDErrors query when alert rule name is not mapped."
+        Name        = "AVD-Insights-Category-EventLogAlerts"
+        Description = "Event-log category alert: FSLogix profile attach/detach failures or VHD errors."
         Kql         = @"
-WVDErrors
+Event
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
-$commonProjection
-| order by TimeGenerated desc
+| where Source has 'FSLogix' or EventLog has 'FSLogix'
+| where EventLevelName in ('Error','Warning')
+| project TimeGenerated, Computer, Source, EventLog, EventID, EventLevelName, RenderedDescription, Status = iff(EventLevelName == 'Error', 'CRITICAL', 'WARNING')
+| order by Status asc, TimeGenerated desc
 | limit 100
+"@
+    }
+
+    # --- Category: GPUPerformance ---
+    @{
+        Name        = "AVD-Insights-Category-GPUPerformance"
+        Description = "GPU-performance category alert: RemoteFX Graphics encoding time exceeds frame budget."
+        Kql         = @"
+Perf
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| where ObjectName == 'RemoteFX Graphics' and CounterName has 'Encoding'
+| summarize AvgValue=round(avg(CounterValue),1), MaxValue=round(max(CounterValue),1), Samples=count() by Computer, ObjectName, CounterName
+| extend Status = iff(AvgValue > 33, 'CRITICAL', 'OK')
+| order by Status asc, MaxValue desc
+| limit 50
+"@
+    }
+
+    # --- Default fallback ---
+    @{
+        Name        = $defaultFallbackName
+        Description = "Fallback Perf counter query when alert rule name is not mapped."
+        Kql         = @"
+Perf
+| where TimeGenerated between (datetime({0}) .. datetime({1}))
+| where ObjectName in ('Processor Information','Memory','LogicalDisk','PhysicalDisk','User Input Delay per Process','RemoteFX Network')
+| summarize AvgValue=round(avg(CounterValue),1), MaxValue=round(max(CounterValue),1), Samples=count() by Computer, ObjectName, CounterName
+| order by Computer asc, ObjectName asc
+| limit 50
 "@
     }
 )
@@ -982,12 +735,15 @@ $commonProjection
 $alertDefinitionMap = Get-AlertDefinitionMap -Definitions $alertDefinitions
 $alertDefinitionMapJson = $alertDefinitionMap | ConvertTo-Json -Depth 20 -Compress
 
+# =========================
+# Build dynamic KQL re-query expression
+# =========================
 $kqlQueryExpr = @"
 @{replace(
     replace(
         coalesce(
-            variables('AlertDefinitionMap')?[coalesce(triggerBody()?['data']?['essentials']?['alertRule'], '$defaultAlertDefinitionName')]?['Kql'],
-            variables('AlertDefinitionMap')?['$defaultAlertDefinitionName']?['Kql']
+            variables('AlertDefinitionMap')?[coalesce(triggerBody()?['data']?['essentials']?['alertRule'], '$defaultFallbackName')]?['Kql'],
+            variables('AlertDefinitionMap')?['$defaultFallbackName']?['Kql']
         ),
         '{0}',
         coalesce(
@@ -1007,10 +763,13 @@ $kqlQueryExpr = @"
 )}
 "@
 
+# =========================
+# Build HTML email template
+# =========================
 $alertEmailHtmlExpr = @'
 @{concat(
   '<html><body style="font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#242424;">',
-  '<h2 style="margin-bottom:8px;">Azure Virtual Desktop Alert</h2>',
+  '<h2 style="margin-bottom:8px;">AVD Insights Alert</h2>',
 
   '<table border="0" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">',
     '<tr><td><b>Rule</b></td><td>', coalesce(triggerBody()?['data']?['essentials']?['alertRule'], 'N/A'), '</td></tr>',
@@ -1028,22 +787,36 @@ $alertEmailHtmlExpr = @'
     '<tr><td><b>Workspace GUID</b></td><td>$WorkspaceId</td></tr>',
   '</table>',
 
-  '<h3 style="margin:14px 0 6px 0;">WVDErrors Results</h3>',
+  '<h3 style="margin:14px 0 6px 0;">Insights Query Results</h3>',
+  '<p style="margin:2px 0 8px 0;font-size:11px;color:#616161;">Rows highlighted in <span style="background:#FFC7CE;color:#9C0006;padding:1px 4px;">red</span> have breached critical thresholds. Rows in <span style="background:#FFEB9C;color:#9C6500;padding:1px 4px;">yellow</span> are warnings.</p>',
   variables('ResultsTableHtml'),
+
+  '<h3 style="margin:18px 0 6px 0;">Troubleshooting Resources</h3>',
+  '<p style="margin:4px 0;">&#128214; <a href="$AlertMatrixUrl" style="color:#0078D4;">Alert Matrix</a> &mdash; thresholds, counters, and tuning guide for all category signals</p>',
+  '<p style="margin:4px 0;">&#128736; <a href="$RunbookUrl" style="color:#0078D4;">Operational Runbook</a> &mdash; triage steps and resolution procedures for each signal</p>',
 
   '</body></html>'
 )}
 '@
 
+$repoBaseUrl     = "https://github.com/AzaryaShaulov/AVD/blob/main/AVD-SessionHostMonitoring/AVD-Insights-Alerts"
+$alertMatrixUrl  = "$repoBaseUrl/Insights-Alert-Matrix.md"
+$runbookUrl      = "$repoBaseUrl/Insights-Runbook.md"
+
 $alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$WorkspaceName', $WorkspaceName)
 $alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$WorkspaceId', $WorkspaceId)
+$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$AlertMatrixUrl', $alertMatrixUrl)
+$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$RunbookUrl', $runbookUrl)
 
+# =========================
+# Build and Deploy Logic App Workflow
+# =========================
 $sendEmailAction = @{
-    type = "ApiConnection"
+    type     = "ApiConnection"
     runAfter = @{
         Append_Table_End = @("Succeeded")
     }
-    inputs = @{
+    inputs   = @{
         method = "post"
         path   = "/v2/Mail"
         host   = @{
@@ -1053,7 +826,7 @@ $sendEmailAction = @{
         }
         body   = @{
             To         = $SendToEmailValue
-            Subject    = "@{concat('AVD Alert - ', coalesce(triggerBody()?['data']?['essentials']?['alertRule'], 'WVDErrors'))}"
+            Subject    = "@{concat('AVD Insights Alert - ', coalesce(triggerBody()?['data']?['essentials']?['alertRule'], 'Performance'))}"
             Body       = $alertEmailHtmlExpr
             From       = $SendFromEmail
             Importance = "High"
@@ -1070,26 +843,22 @@ $workflowDefinition = @{
             defaultValue = @{}
         }
     }
-
     triggers = @{
         manual = @{
             type   = 'Request'
             kind   = 'Http'
-            inputs = @{
-                method = 'POST'
-            }
+            inputs = @{ method = 'POST' }
         }
     }
-
     actions = @{
         Initialize_ResultsTableHtml = @{
-            type   = 'InitializeVariable'
-            inputs = @{
+            type     = 'InitializeVariable'
+            inputs   = @{
                 variables = @(
                     @{
                         name  = 'ResultsTableHtml'
                         type  = 'string'
-                        value = '<p>No WVDErrors rows were returned for this alert window.</p>'
+                        value = '<p>No Insights data rows were returned for this alert window.</p>'
                     }
                 )
             }
@@ -1133,8 +902,8 @@ $workflowDefinition = @{
             inputs = @{
                 name  = 'AlertDescriptionText'
                 value = "@{coalesce(
-                    variables('AlertDefinitionMap')?[coalesce(triggerBody()?['data']?['essentials']?['alertRule'], '$defaultAlertDefinitionName')]?['Description'],
-                    variables('AlertDefinitionMap')?['$defaultAlertDefinitionName']?['Description']
+                    variables('AlertDefinitionMap')?[coalesce(triggerBody()?['data']?['essentials']?['alertRule'], '$defaultFallbackName')]?['Description'],
+                    variables('AlertDefinitionMap')?['$defaultFallbackName']?['Description']
                 )}"
             }
             runAfter = @{
@@ -1142,7 +911,7 @@ $workflowDefinition = @{
             }
         }
 
-        Query_WVDErrors = @{
+        Query_InsightsData = @{
             type     = 'Http'
             runAfter = @{
                 Set_AlertDescriptionText = @('Succeeded')
@@ -1166,7 +935,7 @@ $workflowDefinition = @{
         Start_Table = @{
             type     = 'SetVariable'
             runAfter = @{
-                Query_WVDErrors = @('Succeeded')
+                Query_InsightsData = @('Succeeded')
             }
             inputs   = @{
                 name  = 'ResultsTableHtml'
@@ -1175,16 +944,16 @@ $workflowDefinition = @{
         }
 
         For_Each_Column = @{
-            type     = 'Foreach'
-            foreach  = "@body('Query_WVDErrors')?['tables']?[0]?['columns']"
+            type             = 'Foreach'
+            foreach          = "@body('Query_InsightsData')?['tables']?[0]?['columns']"
             operationOptions = 'Sequential'
-            runAfter = @{
+            runAfter         = @{
                 Start_Table = @('Succeeded')
             }
-            actions  = @{
+            actions          = @{
                 Append_Column_Header = @{
-                    type   = 'AppendToStringVariable'
-                    inputs = @{
+                    type     = 'AppendToStringVariable'
+                    inputs   = @{
                         name  = 'ResultsTableHtml'
                         value = "@{concat('<th>', item()?['name'], '</th>')}"
                     }
@@ -1205,33 +974,30 @@ $workflowDefinition = @{
         }
 
         For_Each_Row = @{
-            type     = 'Foreach'
-            foreach  = "@body('Query_WVDErrors')?['tables']?[0]?['rows']"
+            type             = 'Foreach'
+            foreach          = "@body('Query_InsightsData')?['tables']?[0]?['rows']"
             operationOptions = 'Sequential'
-            runAfter = @{
+            runAfter         = @{
                 Append_Header_Close = @('Succeeded')
             }
-            actions  = @{
+            actions          = @{
                 Start_Row = @{
-                    type   = 'AppendToStringVariable'
-                    inputs = @{
+                    type     = 'AppendToStringVariable'
+                    inputs   = @{
                         name  = 'ResultsTableHtml'
-                        value = "<tr>"
+                        value = "@{if(equals(last(items('For_Each_Row')), 'CRITICAL'), '<tr style=''background-color:#FFC7CE;color:#9C0006;''>', if(equals(last(items('For_Each_Row')), 'WARNING'), '<tr style=''background-color:#FFEB9C;color:#9C6500;''>', '<tr>'))}"
                     }
                     runAfter = @{}
                 }
-
                 For_Each_Cell = @{
-                    type     = 'Foreach'
-                    foreach  = "@item()"
+                    type             = 'Foreach'
+                    foreach          = "@item()"
                     operationOptions = 'Sequential'
-                    runAfter = @{
-                        Start_Row = @('Succeeded')
-                    }
-                    actions  = @{
+                    runAfter         = @{ Start_Row = @('Succeeded') }
+                    actions          = @{
                         Append_Cell = @{
-                            type   = 'AppendToStringVariable'
-                            inputs = @{
+                            type     = 'AppendToStringVariable'
+                            inputs   = @{
                                 name  = 'ResultsTableHtml'
                                 value = "@{concat('<td>', if(equals(item(), null), '', string(item())), '</td>')}"
                             }
@@ -1239,16 +1005,10 @@ $workflowDefinition = @{
                         }
                     }
                 }
-
                 End_Row = @{
                     type     = 'AppendToStringVariable'
-                    runAfter = @{
-                        For_Each_Cell = @('Succeeded')
-                    }
-                    inputs   = @{
-                        name  = 'ResultsTableHtml'
-                        value = "</tr>"
-                    }
+                    runAfter = @{ For_Each_Cell = @('Succeeded') }
+                    inputs   = @{ name = 'ResultsTableHtml'; value = "</tr>" }
                 }
             }
         }
@@ -1273,9 +1033,7 @@ $workflowDefinition = @{
             }
             inputs   = @{
                 statusCode = 202
-                body       = @{
-                    status = 'accepted'
-                }
+                body       = @{ status = 'accepted' }
             }
         }
 
@@ -1286,13 +1044,10 @@ $workflowDefinition = @{
             }
             inputs   = @{
                 statusCode = 500
-                body       = @{
-                    status = 'email_send_failed'
-                }
+                body       = @{ status = 'email_send_failed' }
             }
         }
     }
-
     outputs = @{}
 }
 
@@ -1312,9 +1067,7 @@ $workflowProperties = @{
 }
 
 $body = @{
-    identity   = @{
-        type = 'SystemAssigned'
-    }
+    identity   = @{ type = 'SystemAssigned' }
     location   = $Location
     tags       = $Tags
     properties = $workflowProperties
@@ -1322,17 +1075,15 @@ $body = @{
 
 Write-Step "Deploying Logic App"
 $workflowResourceId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Logic/workflows/$LogicAppName"
-$workflowTempFile = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("logicapp-{0}-{1}.json" -f $LogicAppName, [guid]::NewGuid().ToString('N'))
+$workflowTempFile = Join-Path $env:TEMP ("logicapp-{0}-{1}.json" -f $LogicAppName, [guid]::NewGuid().ToString('N'))
 try {
     $body | ConvertTo-Json -Depth 100 | Set-Content -Path $workflowTempFile -Encoding utf8
-
     $deployResult = & az resource create `
         --id $workflowResourceId `
         --api-version 2019-05-01 `
         --is-full-object `
         --properties "@$workflowTempFile" `
         -o json 2>&1
-
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to deploy Logic App $LogicAppName`n$deployResult"
     }
@@ -1341,18 +1092,20 @@ finally {
     Remove-Item -Path $workflowTempFile -ErrorAction SilentlyContinue
 }
 
+# =========================
+# Managed identity and RBAC
+# =========================
 Write-Step "Retrieving Logic App managed identity"
 $logicApp = Invoke-AzCliJson -Arguments @(
-    "resource","show",
-    "--resource-group",$ResourceGroupName,
-    "--name",$LogicAppName,
-    "--resource-type","Microsoft.Logic/workflows"
+    "resource", "show",
+    "--resource-group", $ResourceGroupName,
+    "--name", $LogicAppName,
+    "--resource-type", "Microsoft.Logic/workflows"
 )
 
 if (-not $logicApp.identity -or -not $logicApp.identity.principalId) {
     throw "Managed identity was not found on Logic App $LogicAppName"
 }
-
 $principalId = $logicApp.identity.principalId
 Write-Host "Logic App Managed Identity PrincipalId: $principalId"
 
@@ -1372,7 +1125,7 @@ else {
     $RoleAssignmentStatus = "CreatedOrExists"
 }
 
-# Verify role assignment was actually applied
+# Verify role assignment
 $verifyRoleJson = & az role assignment list `
     --assignee-object-id $principalId `
     --scope $WorkspaceResourceId `
@@ -1386,6 +1139,9 @@ if ($RoleAssignmentStatus -eq "NeedsVerification") {
     $RoleAssignmentStatus = "AlreadyExists"
 }
 
+# =========================
+# Webhook URL and Action Group
+# =========================
 Write-Step "Retrieving webhook URL"
 $callbackValue = Invoke-AzCliText -Arguments @(
     "rest",
@@ -1395,7 +1151,6 @@ $callbackValue = Invoke-AzCliText -Arguments @(
     "--query", "value",
     "-o", "tsv"
 )
-
 if ([string]::IsNullOrWhiteSpace($callbackValue)) {
     throw "Failed to retrieve Logic App callback URL."
 }
@@ -1409,8 +1164,11 @@ Set-DetailedActionGroupWebhook `
     -ServiceUri $callbackValue
 Write-Host "Detailed webhook action group '$DetailedActionGroupName' is configured."
 
-Write-Step "Ensuring AVD-Category alerts exist (bootstrap if needed)"
-Ensure-AVDCategoryAlertsExist `
+# =========================
+# Bootstrap Insights Alerts
+# =========================
+Write-Step "Ensuring AVD-Insights alerts exist (bootstrap if needed)"
+Ensure-InsightsAlertsExist `
     -SubscriptionId $SubscriptionId `
     -ResourceGroupName $ResourceGroupName `
     -WorkspaceResourceGroupName $WorkspaceResourceGroupName `
@@ -1420,12 +1178,15 @@ Ensure-AVDCategoryAlertsExist `
     -DetailedWebhookReceiverName $DetailedWebhookReceiverName `
     -DetailedResultsWebhookUrl $callbackValue
 
-Write-Step "Switching AVD-Category alerts to detailed-only action group"
-Set-AVDCategoryAlertsToDetailedOnly `
+Write-Step "Switching AVD-Insights alerts to detailed-only action group"
+Set-InsightsAlertsToDetailedOnly `
     -SubscriptionId $SubscriptionId `
     -ResourceGroupName $ResourceGroupName `
     -DetailedActionGroupName $DetailedActionGroupName
 
+# =========================
+# Summary and CSV Report
+# =========================
 Write-Host ""
 Write-Host "Deployment complete." -ForegroundColor Green
 Write-Host ""
@@ -1437,40 +1198,35 @@ Write-Host "1. The Office 365 API connection '$Office365ConnectionName' is auto-
 Write-Host "2. The Log Analytics workspace was resolved by name: $WorkspaceName"
 Write-Host "3. Your Azure Monitor alert rule names should match one of the following definitions to use category-specific KQL:"
 $alertDefinitions | ForEach-Object { Write-Host "   - $($_.Name)" }
-Write-Host "4. If no rule name matches, the script uses the fallback WVDErrors query."
+Write-Host "4. If no rule name matches, the script uses the fallback Perf query."
 Write-Host "5. Detailed webhook action group: $DetailedActionGroupName ($DetailedWebhookReceiverName)"
-Write-Host "6. If AVD-Category alerts were missing, they were auto-created via AVD-Category-Alerts.ps1."
-Write-Host "7. Existing AVD-Category alerts were switched to detailed-only action group routing."
+Write-Host "6. If AVD-Insights alerts were missing, they were auto-created via AVD-Insights-Category-Alerts.ps1."
+Write-Host "7. Existing AVD-Insights alerts were switched to detailed-only action group routing."
 
 $ScriptEndTime = Get-Date
 $ExecutionSeconds = [Math]::Round(($ScriptEndTime - $ScriptStartTime).TotalSeconds, 1)
-$IdentityChange = if ([string]::IsNullOrWhiteSpace($principalId)) {
-    "Unknown"
-}
-else {
-    "LogicAppSystemAssignedManagedIdentity"
-}
+$IdentityChange = if ([string]::IsNullOrWhiteSpace($principalId)) { "Unknown" } else { "LogicAppSystemAssignedManagedIdentity" }
 
 $reportRows = @(
     [pscustomobject]@{
-        TimestampUtc = (Get-Date).ToUniversalTime().ToString("o")
-        SubscriptionId = $SubscriptionId
-        ResourceGroupName = $ResourceGroupName
-        LogicAppName = $LogicAppName
-        Location = $Location
-        WorkspaceName = $WorkspaceName
-        WorkspaceResourceGroupName = $WorkspaceResourceGroupName
-        DetailedActionGroupName = $DetailedActionGroupName
+        TimestampUtc                = (Get-Date).ToUniversalTime().ToString("o")
+        SubscriptionId              = $SubscriptionId
+        ResourceGroupName           = $ResourceGroupName
+        LogicAppName                = $LogicAppName
+        Location                    = $Location
+        WorkspaceName               = $WorkspaceName
+        WorkspaceResourceGroupName  = $WorkspaceResourceGroupName
+        DetailedActionGroupName     = $DetailedActionGroupName
         DetailedWebhookReceiverName = $DetailedWebhookReceiverName
-        SendFromEmail = $SendFromEmail
-        SendToRecipients = $SendToEmailValue
-        WebhookUrl = $callbackValue
-        LogicAppPrincipalId = $principalId
-        IdentityChange = $IdentityChange
-        Office365ConnectionStatus = $Office365ConnectionStatus
-        RoleAssignmentStatus = $RoleAssignmentStatus
-        ExecutionSeconds = $ExecutionSeconds
-        Result = "Success"
+        SendFromEmail               = $SendFromEmail
+        SendToRecipients            = $SendToEmailValue
+        WebhookUrl                  = $callbackValue
+        LogicAppPrincipalId         = $principalId
+        IdentityChange              = $IdentityChange
+        Office365ConnectionStatus   = $Office365ConnectionStatus
+        RoleAssignmentStatus        = $RoleAssignmentStatus
+        ExecutionSeconds            = $ExecutionSeconds
+        Result                      = "Success"
     }
 )
 
@@ -1479,7 +1235,6 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($csvDirectory) -and -not (Test-Path -Path $csvDirectory)) {
         New-Item -Path $csvDirectory -ItemType Directory -Force | Out-Null
     }
-
     $reportRows | Export-Csv -Path $CsvPath -NoTypeInformation -Force
     Write-Host "CSV report written: $CsvPath" -ForegroundColor Green
 }
