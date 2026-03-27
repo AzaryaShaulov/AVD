@@ -1,312 +1,188 @@
 # AVD Session Host Insights Monitoring
 
-This script automates Azure Virtual Desktop session host performance monitoring by creating a Data Collection Rule (DCR) that sends performance counters to a Log Analytics workspace in both the `InsightsMetrics` and `Perf` tables. It automatically discovers **all AVD host pools** in the subscription and provides an interactive menu to associate the DCR with session hosts across selected host pools, enabling AVD Insights and VM Insights dashboards with a single run.
+Script: `AVD-Insights-Enable-PerfMetrics-Monitoring.ps1`
 
-Once perf data is flowing, the companion [AVD-Insights-Alerts](AVD-Insights-Alerts/) scripts deploy **7 category-consolidated performance alerts with rich email notifications** — HTML emails that include the specific counter values, affected host names, and threshold breaches, far more actionable than standard Azure Monitor "alert fired" notifications.
+## Purpose
 
-## What It Does
+This script gives operators a repeatable way to enable and standardize Azure Virtual Desktop (AVD) session host performance monitoring.
 
-- Creates or updates a DCR that collects performance counters into **two** tables:
-  - `InsightsMetrics` — consumed by VM Insights dashboards and workbooks
-  - `Perf` — consumed by Log Analytics queries and AVD Insights
-- Validates the DCR was created by resolving its resource ID
-- **Auto-discovers** all AVD host pools in the subscription
-- **Interactive association** with session hosts:
-  - [A] Associate with all host pools
-  - [S] Select specific host pools by number
-  - [N] Skip association
-- Automatically installs the `desktopvirtualization` Azure CLI extension if not present
-- Shows real-time progress with association status per VM
-- Reports per-pool and overall success/skip/fail counts
-- Supports idempotency: skips already-associated VMs automatically
+It handles two connected tasks in one run:
 
-## Script Reference
+1. Create or update a Data Collection Rule (DCR) that sends host performance counters to Log Analytics.
+2. Optionally assign and remediate the built-in AMA + DCR association policy so hosts are linked to the DCR at scale.
 
-| # | Script | Purpose | What It Does | Quick Start (copy & paste) |
-| -- | ------ | ------- | ------------ | -------------------------- |
-| 1 | `AVD-Insights-Enable-PerfMetrics-Monitoring.ps1` | Deploy DCR for perf counters | Creates a Data Collection Rule collecting 28 perf counters into `InsightsMetrics` and `Perf` tables, auto-discovers all AVD host pools, and provides an interactive menu to associate the DCR with session hosts. Add `-InstallAma` to also install AMA on VMs where missing. | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2"` |
-| 2 | `AVD-Insights-Alerts-Precheck.ps1` | Validate Insights prerequisites | Checks RBAC permissions, Azure CLI extensions, LAW connectivity, and verifies Perf counter data flow. Read-only — no changes made. | `.\AVD-Insights-Alerts\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"` |
-| 3 | `AVD-Insights-Deploy-LogicApp.ps1` | **Primary: deploy Insights alerts + email pipeline** | Creates/updates the Logic App, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 7 `AVD-Insights-Category-*` alerts. Single command does everything. | `.\AVD-Insights-Alerts\AVD-Insights-Deploy-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-Insights-Alert-Email" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmail "team@contoso.com"` |
-| 4 | `AVD-Insights-Category-Alerts.ps1` | Create Insights alert rules only | Reads alert definitions from `alerts-config.insights.json`, loads KQL query files, and creates scheduled query rules. Called automatically by script #3 — run directly only for standalone alert creation. | `.\AVD-Insights-Alerts\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2"` |
+## What The Script Does
 
-**Additional modes:**
+- Validates Azure CLI sign-in, subscription context, and required resource groups.
+- Creates or updates one DCR that writes counters to both `InsightsMetrics` and `Perf`.
+- Supports three execution modes:
+  - `DcrOnly`
+  - `DcrAndPolicy`
+  - `DcrPolicyRemediation`
+- Discovers host pools and resolves policy scope from:
+  - all discovered host pool resource groups,
+  - specific host pools, or
+  - manual RG override list.
+- Supports two policy assignment strategies:
+  - `SingleAssignment` (default): one subscription-scope assignment limited by `notScopes`.
+  - `PerResourceGroup`: one assignment per selected RG.
+- Automatically falls back from `SingleAssignment` to `PerResourceGroup` if safe `notScopes` limits are exceeded.
+- In `DcrOnly`, prints and records guidance that policy association is still required manually.
+- Always writes a timestamped CSV report for audit and operations handoff.
 
-| Mode | Command |
-| ---- | ------- |
-| With AMA install | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -InstallAma` |
-| WhatIf (preview changes) | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -WhatIf` |
-| Verbose + transcript | `.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -TranscriptPath "C:\Logs\dcr.log" -Verbose` |
+## Why Use It (Advantages)
 
-## Features (v1.8)
+- Faster deployment: DCR and policy wiring are done in one workflow.
+- Safer re-runs: operations are idempotent and designed for repeated execution.
+- Flexible scope targeting: interactive and non-interactive options for broad or narrow rollouts.
+- Better reliability at scale: assignment-mode fallback avoids oversized `notScopes` operations.
+- Clear operator outcomes: console summary plus CSV status per scope.
+- Automation-friendly: supports `-NonInteractive` and `-WhatIf` for pipeline and dry-run usage.
 
-- **Enhanced Monitoring**: 28 performance counters covering CPU, memory, disk (per-volume), AVD session quality (input delay, RTT, UDP, GPU), session lifecycle (Terminal Services), and network bandwidth
-- **Progress Indicators**: Real-time progress bar with percentage complete
-- **Idempotency Checks**: Automatically detects and skips existing associations
-- **Transcript Support**: Optional logging of full script execution
-- **WhatIf Mode**: Preview all changes without making any modifications
-- **Verbose Logging**: Detailed diagnostic output with `-Verbose` flag
-- **REST API Integration**: Uses Azure REST API for reliable session host enumeration
+## Minimum Permissions By Execution Mode
 
-## Parameters
+Notes:
 
-| Parameter | Required | Default | Description |
-|---|---|---|---|
-| `SubscriptionId` | **Yes** | — | Azure subscription ID |
-| `LawRG` | No | `rg-avd-monitoring` | Resource group of the Log Analytics workspace |
-| `LawName` | No | `law-avd-prod` | Log Analytics workspace name |
-| `DcrRG` | No | `rg-avd-monitoring` | Resource group where the DCR is created |
-| `DcrName` | No | `AVD-SessionHost-DCR` | Name of the Data Collection Rule |
-| `Location` | No | `EastUS2` | Azure region for the DCR |
-| `SamplingFrequencyInSeconds` | No | `60` | Counter polling interval (10-3600 seconds) |
-| `CounterSpecifiers` | No | 28 counters | Array of performance counter paths to collect |
-| `TranscriptPath` | No | — | Optional path to save full script execution transcript |
-| `InstallAma` | No | Off | Also check and install Azure Monitor Agent on session host VMs during DCR association |
-| `AmaOnly` | No | Off | Run AMA validation/install workflow only (implies `-InstallAma`). Skips DCR create/update and associations |
+- Scope matters: for `SingleAssignment`, policy permissions are needed at subscription scope. For `PerResourceGroup`, they are needed on each targeted resource group.
+- If `PolicyScopeResourceGroup` is provided, host-pool discovery permission is not required.
 
-## Counters Collected (Default - 28 Total)
+| Mode | Minimum Azure actions required | Practical minimum role guidance |
+| --- | --- | --- |
+| `DcrOnly` | `Microsoft.Resources/subscriptions/resourceGroups/read`, `Microsoft.OperationalInsights/workspaces/read`, `Microsoft.Insights/dataCollectionRules/read`, `Microsoft.Insights/dataCollectionRules/write` | Monitoring Contributor on DCR RG + Log Analytics Reader (or Reader) on LAW scope |
+| `DcrAndPolicy` | All `DcrOnly` actions, plus `Microsoft.Authorization/policyAssignments/read`, `Microsoft.Authorization/policyAssignments/write`, `Microsoft.Authorization/policyAssignments/delete` (cleanup path), `Microsoft.Authorization/roleAssignments/write` (for assignment create with managed identity), and optionally `Microsoft.DesktopVirtualization/hostPools/read` (if discovery is used) | DCR permissions above + Policy Contributor at target scope + ability to create role assignments (for create path) |
+| `DcrPolicyRemediation` | All `DcrAndPolicy` actions, plus `Microsoft.PolicyInsights/remediations/read`, `Microsoft.PolicyInsights/remediations/write` | `DcrAndPolicy` permissions + permission to create remediation tasks at target scope |
 
-### CPU (1)
-| Counter | Description |
-|---|---|
-| `Processor Information(_Total)\% Processor Time` | CPU utilization |
+## 3 Simple Starter Examples
 
-### Memory (4)
-| Counter | Description |
-|---|---|
-| `Memory\Available MBytes` | Free memory |
-| `Memory\% Committed Bytes In Use` | Memory pressure |
-| `Memory\Pages/sec` | Hard page faults requiring disk I/O |
-| `Memory\Page Faults/sec` | Total page faults (soft + hard) |
-
-### Disk Capacity (1)
-| Counter | Description |
-|---|---|
-| `LogicalDisk(*)\% Free Space` | Disk free space percentage (per volume) |
-
-### Disk Latency (6)
-| Counter | Description |
-|---|---|
-| `LogicalDisk(*)\Avg. Disk sec/Read` | Logical disk read latency |
-| `LogicalDisk(*)\Avg. Disk sec/Write` | Logical disk write latency |
-| `LogicalDisk(*)\Avg. Disk sec/Transfer` | Logical disk overall latency |
-| `PhysicalDisk(*)\Avg. Disk sec/Read` | Physical disk read latency |
-| `PhysicalDisk(*)\Avg. Disk sec/Write` | Physical disk write latency |
-| `PhysicalDisk(*)\Avg. Disk sec/Transfer` | Physical disk overall latency |
-
-### Disk Queue (2)
-| Counter | Description |
-|---|---|
-| `LogicalDisk(*)\Current Disk Queue Length` | Logical disk queue depth |
-| `PhysicalDisk(*)\Avg. Disk Queue Length` | Physical disk average queue depth |
-
-### AVD Session Quality (5)
-| Counter | Description |
-|---|---|
-| `User Input Delay per Process(*)\Max Input Delay` | Per-process input delay |
-| `User Input Delay per Session(*)\Max Input Delay` | Per-session input delay |
-| `RemoteFX Network(*)\Current TCP RTT` | TCP round-trip latency |
-| `RemoteFX Network(*)\Current UDP Bandwidth` | UDP bandwidth (RDP Shortpath) |
-| `RemoteFX Graphics(*)\Average Encoding Time` | GPU encoding time (GPU hosts) |
-
-### AVD Session Lifecycle (3)
-| Counter | Description |
-|---|---|
-| `Terminal Services\Active Sessions` | Active session count per host |
-| `Terminal Services\Inactive Sessions` | Disconnected/idle session count |
-| `Terminal Services\Total Sessions` | Total session count per host |
-
-### Network Bandwidth (4)
-| Counter | Description |
-|---|---|
-| `Network Adapter(*)\Bytes Total/sec` | Total network throughput |
-| `Network Adapter(*)\Bytes Received/sec` | Inbound network bandwidth |
-| `Network Adapter(*)\Bytes Sent/sec` | Outbound network bandwidth |
-| `Network Adapter(*)\Current Bandwidth` | Network adapter link speed |
-
-### Network Queue (1)
-| Counter | Description |
-|---|---|
-| `Network Adapter(*)\Output Queue Length` | Network output queue depth |
-
-## Requirements
-
-- Azure CLI installed and logged in (`az login`)
-- **Monitoring Contributor** on the DCR resource group and Log Analytics workspace
-- **Desktop Virtualization Reader** on the subscription (for host pool discovery)
-- The `desktopvirtualization` Azure CLI extension — installed automatically by the script if missing
-
-## Usage
-
-### Default mode: Create DCR + associate session hosts
+### 1) Interactive guided run (best first run)
 
 ```powershell
 .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 `
   -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -LawRG "rg-avd-monitoring" `
-  -LawName "law-avd-prod" `
-  -DcrRG "rg-avd-monitoring" `
+  -LawRG "YOUR-LAW-RG" `
+  -LawName "YOUR-LAW-NAME" `
+  -DcrRG "YOUR-DCR-RG" `
   -DcrName "AVD-SessionHost-DCR" `
   -Location "eastus2"
 ```
 
-The script will:
-1. Create/update the DCR
-2. Discover all host pools in the subscription
-3. Display an interactive menu:
-   ```
-   Discovered 5 host pool(s):
-     [1] AVD-Pooled  (RG: rg-avd-pooled)
-     [2] Contoso-AppSharePool  (RG: rg-avd-monitoring)
-     [3] Contoso-EntraID-HostPool  (RG: rg-avd-entra)
-     [4] Personal-Pool  (RG: rg-avd-monitoring)
-     [5] SharedDesktops-Pool  (RG: rg-avd-shared)
-   
-   Associate DCR 'AVD-SessionHost-DCR' with session hosts in:
-     [A] All host pools
-     [S] Select specific host pools
-     [N] Skip
-   
-   Choice:
-   ```
+Explanation: The script prompts for mode, scope, and confirmation. Use this when validating behavior in a new environment.
 
-### WhatIf mode: Preview changes without applying
+### 2) DCR-only dry run (safe preview)
 
 ```powershell
 .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 `
   -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -LawRG "rg-avd-monitoring" `
-  -LawName "law-avd-prod" `
-  -DcrRG "rg-avd-monitoring" `
-  -DcrName "AVD-SessionHost-DCR" `
-  -Location "eastus2" `
+  -LawRG "YOUR-LAW-RG" `
+  -LawName "YOUR-LAW-NAME" `
+  -DcrRG "YOUR-DCR-RG" `
+  -NonInteractive `
+  -ExecutionMode DcrOnly `
   -WhatIf
 ```
 
-### With transcript logging and verbose output
+Explanation: Previews DCR changes only and outputs a reminder that policy association must be done manually in this mode.
+
+### 3) Full non-interactive rollout for discovered host-pool RGs
 
 ```powershell
 .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 `
   -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -LawRG "rg-avd-monitoring" `
-  -LawName "law-avd-prod" `
-  -DcrRG "rg-avd-monitoring" `
-  -DcrName "AVD-SessionHost-DCR" `
-  -Location "eastus2" `
-  -TranscriptPath "C:\Logs\DCR-Setup.log" `
-  -Verbose
+  -LawRG "YOUR-LAW-RG" `
+  -LawName "YOUR-LAW-NAME" `
+  -DcrRG "YOUR-DCR-RG" `
+  -NonInteractive `
+  -ExecutionMode DcrPolicyRemediation `
+  -ScopeSelection AllHostPoolResourceGroups
 ```
 
-### With AMA install: Also install Azure Monitor Agent on VMs
+Explanation: Creates/updates DCR, assigns policy, and starts remediation across all discovered host-pool RGs.
 
-```powershell
-.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 `
-  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -LawRG "rg-avd-monitoring" `
-  -LawName "law-avd-prod" `
-  -DcrRG "rg-avd-monitoring" `
-  -DcrName "AVD-SessionHost-DCR" `
-  -Location "eastus2" `
-  -InstallAma
-```
+## Key Parameters And Switches
 
-Same as default, but also checks each session host VM for the Azure Monitor Agent extension and installs it where missing.
+| Parameter | Required | Default | Description |
+| --- | --- | --- | --- |
+| `SubscriptionId` | Yes | - | Azure subscription ID |
+| `LawRG` | No | `rg-avd-monitoring` | Log Analytics workspace resource group |
+| `LawName` | No | `law-avd-prod` | Log Analytics workspace name |
+| `DcrRG` | No | `rg-avd-monitoring` | Resource group where DCR is created/updated |
+| `DcrName` | No | `AVD-SessionHost-DCR` | DCR name |
+| `Location` | No | `EastUS2` | Region for DCR and policy assignment identity |
+| `SamplingFrequencyInSeconds` | No | `60` | Counter polling interval |
+| `CounterSpecifiers` | No | Built-in list | Performance counters to collect |
+| `PolicyAssignmentName` | No | Predefined display name | Policy assignment display name |
+| `PolicyAssignmentResourceName` | No | `avd-sessionhost-ama-dcr` | Policy assignment resource name |
+| `PolicyAssignmentMode` | No | `SingleAssignment` | `SingleAssignment` or `PerResourceGroup` |
+| `PolicyDefinitionId` | No | `244efd75-...` | Policy definition id for AMA + DCR association |
+| `ExecutionMode` | No | `DcrPolicyRemediation` | `DcrOnly`, `DcrAndPolicy`, `DcrPolicyRemediation` |
+| `ScopeSelection` | No | `AllHostPoolResourceGroups` | Scope strategy in non-interactive mode |
+| `HostPoolNames` | No | - | Host pools used when `ScopeSelection` is `SpecificHostPools` |
+| `PolicyScopeResourceGroup` | No | - | Manual policy scope RG list override |
+| `ReportPath` | No | Script folder | CSV output directory or base filename |
+| `TranscriptPath` | No | - | Optional transcript output file |
+| `NonInteractive` | Switch | Off | Skip prompts |
+| `SkipRemediationTask` | Switch | Off | Downgrades remediation mode to policy-only |
+| `WhatIf` | Switch | Off | Preview changes without applying |
 
-### Skip confirmation prompts (unsafe - for automation)
+## CSV Report Output
 
-```powershell
-.\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 `
-  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -LawRG "rg-avd-monitoring" `
-  -LawName "law-avd-prod" `
-  -DcrRG "rg-avd-monitoring" `
-  -DcrName "AVD-SessionHost-DCR" `
-  -Location "eastus2" `
-  -Confirm:$false
-```
+Output file pattern:
 
-## Post-Deployment
+`avd-dcr-policy-report-yyyyMMdd-HHmmss.csv`
 
-After running with interactive association, the script prints a detailed summary:
+The report includes:
 
-```
-=== Association Summary ===
-Total Pools Processed: 5
-Successful: 14
-Skipped (already associated): 0
-Failed: 0
-Duration: 01:55
-```
+- subscription and action mode
+- DCR name and DCR id
+- host pool name(s) and target RG
+- policy assignment id
+- remediation task name
+- status, error message, and duration
 
-Data appears in `InsightsMetrics` and `Perf` within 5–15 minutes.
+Common status values include:
 
-## Verification
+- `DcrSuccess`, `DcrWhatIf`
+- `PolicySuccess`, `PolicyWhatIf`
+- `PolicyRemediationSuccess`
+- `Failed`, `FatalError`
 
-### Check DCR exists
+## Quick Verification Commands
+
+Check DCR:
+
 ```powershell
 az monitor data-collection rule show `
-  -g "rg-avd-monitoring" `
+  -g "YOUR-DCR-RG" `
   -n "AVD-SessionHost-DCR" `
   -o table
 ```
 
-### Verify association for a specific VM
+Check subscription-scope assignment (default consolidated mode):
+
 ```powershell
-az monitor data-collection rule association list `
-  --resource "/subscriptions/{sub-id}/resourceGroups/{rg}/providers/Microsoft.Compute/virtualMachines/{vm-name}" `
-  --query "[?contains(dataCollectionRuleId, 'AVD-SessionHost-DCR')].{Name:name, DCR:dataCollectionRuleId}" `
+az policy assignment show `
+  --scope "/subscriptions/<sub-id>" `
+  --name "avd-sessionhost-ama-dcr" `
   -o table
 ```
 
-### Query data in Log Analytics
-```kql
-// Check InsightsMetrics table
-InsightsMetrics
-| where TimeGenerated > ago(1h)
-| where Namespace == "Processor" or Namespace == "Memory" or Namespace == "LogicalDisk" or Namespace == "Network"
-| summarize count() by Name, Namespace, bin(TimeGenerated, 5m)
+Check remediation task:
 
-// Check Perf table
-Perf
-| where TimeGenerated > ago(1h)
-| where ObjectName in ("Processor", "Memory", "LogicalDisk", "PhysicalDisk", "Network Adapter")
-| summarize count() by ObjectName, CounterName, bin(TimeGenerated, 5m)
+```powershell
+az policy remediation show `
+  -n "avd-sessionhost-ama-dcr-remediate" `
+  -o table
 ```
 
 ## Troubleshooting
 
-### Extension installation fails
-If the `desktopvirtualization` extension fails to install automatically, install it manually:
-```powershell
-az extension add --name desktopvirtualization
-```
-
-### DCR creation fails with "InvalidPayload"
-Common causes:
-- **Datasource name too long** (max 32 chars) - Fixed in v1.6+
-- **Invalid counter path** - Verify counter names match Windows Performance Monitor syntax
-
-### Session host enumeration fails
-The script uses Azure REST API to enumerate session hosts. If this fails:
-1. Verify you have **Desktop Virtualization Reader** role on the subscription
-2. Check the host pool exists: `az desktopvirtualization hostpool list -o table`
-3. Run with `-Verbose` flag to see detailed error messages
-
-### No data appearing in Log Analytics
-Wait 5-15 minutes after association, then:
-1. Verify the DCR association exists (see Verification section above)
-2. Check the Azure Monitor Agent is installed on the VMs
-3. Verify the VM has network connectivity to Azure Monitor endpoints
+- If host pool discovery fails, verify permission for `Microsoft.DesktopVirtualization/hostPools/read`.
+- If policy assignment fails, verify `Microsoft.Authorization/policyAssignments/write` at scope.
+- If remediation fails, verify the assignment exists and rerun remediation mode.
+- If metrics are delayed, allow 5-15 minutes for first ingestion into `InsightsMetrics` and `Perf`.
 
 ## Version History
 
-- **v1.8** (2026-03-16): Added 11 AVD-specific counters (input delay, RTT, UDP, GPU, Terminal Services, memory pages, disk queue); changed disk instances from (_Total) to (*) for per-volume alerting (28 total counters)
-- **v1.7** (2026-02-18): Enhanced disk latency and network bandwidth counters (17 counters)
-- **v1.6** (2026-02-18): Fixed DCR datasource names, REST API for session hosts, division by zero guard
-- **v1.5**: Enhanced with progress indicators, idempotency checks, transcript support
-- **v1.0**: Initial release with basic DCR creation and manual association
-
-## Related Links
-
-- [Azure Virtual Desktop Insights](https://learn.microsoft.com/en-us/azure/virtual-desktop/insights)
-- [Data Collection Rules](https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/data-collection-rule-overview)
-- [Azure Monitor Agent](https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-overview)
+- v2.3 (2026-03-26): Performance-focused CLI round-trip reduction, assignment guardrails/fallback, duplicate cleanup, and DCR-only guidance in console + CSV
+- v2.1 (2026-03-26): Interactive execution/scope workflow, per-RG policy processing, mandatory timestamped CSV reporting
+- v2.0 (2026-03-26): Policy-first AMA + DCR association model

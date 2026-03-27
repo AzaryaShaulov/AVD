@@ -45,6 +45,26 @@ function Write-Log {
   Write-Host "[$ts] $Message" -ForegroundColor $Color
 }
 
+function ConvertTo-RedactedUrl {
+  param([string]$Url)
+
+  if ([string]::IsNullOrWhiteSpace($Url)) {
+    return $Url
+  }
+
+  try {
+    $uri = [System.Uri]$Url
+    if ([string]::IsNullOrWhiteSpace($uri.Query)) {
+      return $Url
+    }
+
+    return ($uri.GetLeftPart([System.UriPartial]::Path) + '?***')
+  }
+  catch {
+    return '***'
+  }
+}
+
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
   throw 'Azure CLI not found. Install Azure CLI first.'
 }
@@ -105,7 +125,7 @@ Write-Log 'Posting sample alert payload...' 'Cyan'
 try {
   $resp = Invoke-WebRequest -Method Post -Uri $callbackUrl -ContentType 'application/json' -Body $payload -UseBasicParsing
   Write-Log "Sample alert accepted. HTTP status: $($resp.StatusCode)" 'Green'
-  Write-Log "Callback URL used: $callbackUrl" 'Gray'
+  Write-Log "Callback URL used: $(ConvertTo-RedactedUrl -Url $callbackUrl)" 'Gray'
 } catch {
   $msg = $_.Exception.Message
   throw "Sample alert post failed: $msg"

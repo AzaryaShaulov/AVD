@@ -26,60 +26,25 @@ Azure Virtual Desktop generates diagnostic logs that are **critical for monitori
 - **Eliminate** manual configuration overhead and human error
 - **Ensure** comprehensive visibility into your AVD environment
 
-## What Are AVD Diagnostic Logs?
+## Prerequisites
 
-Azure Virtual Desktop diagnostic logs capture detailed telemetry about your AVD environment's operations, performance, and user activities. These logs are stored in Log Analytics workspaces where they can be queried, analyzed, and used for alerting.
+- Azure CLI installed ([Install guide](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli))
+- Azure account with **Monitoring Contributor** permissions
+- PowerShell 5.1 or later
+- Active Azure subscription with AVD resources
 
-### Critical Log Categories
+## Best Practice Checklist
 
-| Resource Type | Log Category | Description |
-|---|---|---|
-| Host Pool | `HostRegistration` | Session host registration events and health status changes |
-| Host Pool | `Connection` | User connection attempts, successes, and failures |
-| Host Pool | `Error` | Errors occurring at the host pool level |
-| Host Pool | `Checkpoint` | Lifecycle events and state transitions |
-| Host Pool | `Management` | Administrative operations and configuration changes |
-| Host Pool | `AgentHealthStatus` | AVD agent health monitoring |
-| Application Group | `Checkpoint` | Application group lifecycle events |
-| Application Group | `Error` | Application-specific errors |
-| Application Group | `Management` | Application group configuration changes |
-| Workspace | `Checkpoint` | Workspace lifecycle events |
-| Workspace | `Error` | Workspace-level errors |
-| Workspace | `Management` | Workspace configuration changes |
-| Workspace | `Feed` | User feed subscription activities |
+Before running this script, ensure:
 
-### Real-World Use Cases
+> <strong><span style="color:#b00020;">Attention:</span></strong> <span style="color:#2e7d32;font-weight:700;">Set the diagnostic settings to send data to the same Log Analytics workspace used by Nerdio, if one is deployed.</span>
 
-| Scenario | Log Table | Purpose |
-|---|---|---|
-| Troubleshooting Connection Issues | `WVDConnections` | Identify failed user connections in the last 24 hours |
-| Monitoring Agent Health | `WVDAgentHealthStatus` | Detect session hosts in a non-Available state |
-| Tracking User Sessions | `WVDConnections` | Summarize active sessions per user over the last 7 days |
-
-**Troubleshooting Connection Issues:**
-```kusto
-WVDConnections
-| where TimeGenerated > ago(24h)
-| where State == "Failed"
-| project TimeGenerated, UserName, ClientOS, ClientType, CorrelationId, Message
-```
-
-**Monitoring Agent Health:**
-```kusto
-WVDAgentHealthStatus
-| where TimeGenerated > ago(1h)
-| where Status != "Available"
-| summarize count() by SessionHostName, Status
-```
-
-**Tracking User Sessions:**
-```kusto
-WVDConnections
-| where TimeGenerated > ago(7d)
-| where State == "Connected"
-| summarize Sessions = count() by UserName, ClientOS
-| order by Sessions desc
-```
+- [ ] Log Analytics workspace exists and is properly sized
+- [ ] You have Monitoring Contributor permissions on AVD resources
+- [ ] Azure CLI is installed and you're logged in (`az login`)
+- [ ] You've reviewed your workspace retention policy
+- [ ] You've planned for log ingestion costs
+- [ ] You have a strategy for log queries and alerting (see AVD-Alerts script)
 
 ## Why Enable Diagnostic Logs? (Best Practices)
 
@@ -119,23 +84,7 @@ Enabling diagnostic logs for Azure Virtual Desktop is considered a **critical be
 - 📄 **CSV export** of configuration results
 - 🛡️ **Error handling** with detailed status reporting
 
-## Prerequisites
-
-- Azure CLI installed ([Install guide](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli))
-- Azure account with **Monitoring Contributor** permissions
-- PowerShell 5.1 or later
-- Active Azure subscription with AVD resources
-
 ## Quick Start
-## Best Practice Checklist
-
-Before running this script, ensure:
-- [ ] Log Analytics workspace exists and is properly sized
-- [ ] You have Monitoring Contributor permissions on AVD resources
-- [ ] Azure CLI is installed and you're logged in (`az login`)
-- [ ] You've reviewed your workspace retention policy
-- [ ] You've planned for log ingestion costs
-- [ ] You have a strategy for log queries and alerting (see AVD-Alerts script)
 
 1. **Login to Azure:**
    ```powershell
@@ -160,72 +109,24 @@ Before running this script, ensure:
 
 ## Usage Examples
 
-### Basic — Enable Diagnostics with Defaults
-Discovers all AVD resources in the subscription and enables `allLogs` diagnostic settings pointing to the default workspace (`AVD-LAW` in `rg-avd-monitoring`):
+### Starter 1 — Custom Workspace + CSV Report
+Target a specific Log Analytics workspace and write the report to a custom path:
 ```powershell
-.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUBSCRIPTION-ID"
+.\AVD-Enable-Diagnostic-Logs.ps1 `
+    -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+    -WorkspaceName "AVD-LogAnalytics" `
+    -WorkspaceResourceGroupName "rg-az-west2-avd-nonprod" `
+    -CsvPath "C:\Reports\avd-diagnostics-status.csv"
 ```
 
-### Check-Only Mode (`-CheckOnly`)
-Review the current diagnostic settings status across all AVD resources **without making any changes**. Useful for auditing before a deployment or verifying after one:
+### Starter 2 — Check-Only Audit
+Review current diagnostic settings status without making any changes:
 ```powershell
 .\AVD-Enable-Diagnostic-Logs.ps1 `
     -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
     -CheckOnly
 ```
 Output shows per-resource status: `Enabled (allLogs)`, `Enabled (not allLogs)`, `Not Configured`, or `Disabled`.
-
-### Custom Workspace (`-WorkspaceName`, `-WorkspaceResourceGroupName`)
-Point diagnostics at a specific Log Analytics workspace in a different resource group:
-```powershell
-.\AVD-Enable-Diagnostic-Logs.ps1 `
-    -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-    -WorkspaceName "AVD-LogAnalytics" `
-    -WorkspaceResourceGroupName "rg-az-west2-avd-nonprod"
-```
-
-### Custom Diagnostic Setting Name (`-DiagnosticSettingName`)
-Use a custom name for the diagnostic settings (e.g., when you need separate settings per environment):
-```powershell
-.\AVD-Enable-Diagnostic-Logs.ps1 `
-    -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-    -WorkspaceName "AVD-LogAnalytics" `
-    -WorkspaceResourceGroupName "rg-az-west2-avd-nonprod" `
-    -DiagnosticSettingName "AVD-Prod-Diagnostics"
-```
-
-### Custom CSV Export Path (`-CsvPath`)
-Export the configuration report to a specific file:
-```powershell
-.\AVD-Enable-Diagnostic-Logs.ps1 `
-    -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-    -CsvPath "C:\Reports\avd-diagnostics-status.csv"
-```
-
-### All Parameters Together
-Full example combining every parameter:
-```powershell
-.\AVD-Enable-Diagnostic-Logs.ps1 `
-    -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-    -WorkspaceName "AVD-LogAnalytics" `
-    -WorkspaceResourceGroupName "rg-az-west2-avd-nonprod" `
-    -DiagnosticSettingName "AVD-Prod-Diagnostics" `
-    -CsvPath ".\reports\avd-diag-report.csv"
-```
-
-### Recommended Workflow
-Run `-CheckOnly` first, then deploy, then verify:
-```powershell
-# 1. Audit current state
-.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" -CheckOnly
-
-# 2. Enable diagnostics
-.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" `
-    -WorkspaceName "YourLAW" -WorkspaceResourceGroupName "YourRG"
-
-# 3. Verify after deployment
-.\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" -CheckOnly
-```
 
 ## Output
 
@@ -234,15 +135,6 @@ Run `-CheckOnly` first, then deploy, then verify:
 | **Console Output** | Color-coded status per resource: 🟢 Success · 🟡 Skipped/Warning · 🔴 Error |
 | **CSV Report** | Exported to `CsvPath`; includes resource name & type, configuration status, actions taken, errors |
 | **Summary Statistics** | Totals for: resources found, successfully configured, skipped (already configured), failed |
-
-## Status Indicators
-
-| Status | Meaning |
-|--------|---------|
-| `Enabled (allLogs)` | Configured with comprehensive logging |
-| `Enabled (not allLogs)` | Configured but not using allLogs category |
-| `Not Configured` | No diagnostic settings exist |
-| `Disabled` | Diagnostic settings exist but are disabled |
 
 ## Troubleshooting
 
