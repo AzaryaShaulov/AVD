@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Minimal script to enable Azure Monitor diagnostic settings for AVD resources.
   Repository: https://github.com/AzaryaShaulov/AVD
@@ -63,7 +63,7 @@ param(
   [string]$DiagnosticSettingName = "AVD-Diagnostics",
 
   [Parameter(Mandatory = $false)]
-  [string]$CsvPath = (Join-Path ($PSScriptRoot ?? '.') 'avd-diagnostics-minimal.csv'),
+  [string]$CsvPath,
 
   [Parameter(Mandatory = $false)]
   [switch]$CheckOnly
@@ -73,6 +73,11 @@ $ErrorActionPreference = "Stop"
 
 # Track execution time
 $ScriptStartTime = Get-Date
+
+if ([string]::IsNullOrWhiteSpace($CsvPath)) {
+  $csvBasePath = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { "." } else { $PSScriptRoot }
+  $CsvPath = Join-Path -Path $csvBasePath -ChildPath 'avd-diagnostics-minimal.csv'
+}
 
 # Resource types
 $resourceTypes = @(
@@ -97,54 +102,111 @@ function Get-DiagnosticStatus {
     [string]$DiagName
   )
 
-  $global:LASTEXITCODE = 0
-  $existing = az monitor diagnostic-settings show --resource $ResourceId --name $DiagName -o json --only-show-errors 2>$null
-
-  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($existing)) {
-    return [pscustomobject]@{
-      Status            = "Not Configured"
-      HasEnabledLogs    = $false
-      UsesAllLogs       = $false
-      HasEnabledMetrics = $false
-    }
-  }
-
   try {
-    $settings = $existing | ConvertFrom-Json
+    function Get-DiagnosticFlags {
+      param([object]$SettingsObject)
 
-    $hasEnabledLogs = $false
-    $usesAllLogs    = $false
+      $enabledLogs = @()
+      if ($SettingsObject.logs) {
+        $enabledLogs = @($SettingsObject.logs | Where-Object { $_.enabled -eq $true })
+      }
 
-    if ($settings.logs) {
-      $enabledLogs = $settings.logs | Where-Object { $_.enabled -eq $true }
-      $hasEnabledLogs = ($enabledLogs.Count -gt 0)
+      $enabledMetrics = @()
+      if ($SettingsObject.metrics) {
+        $enabledMetrics = @($SettingsObject.metrics | Where-Object { $_.enabled -eq $true })
+      }
 
-      # True if any enabled log entry uses categoryGroup == "allLogs"
       $usesAllLogs = ($enabledLogs | Where-Object {
         $_.PSObject.Properties.Name -contains "categoryGroup" -and $_.categoryGroup -eq "allLogs"
       }).Count -gt 0
-    }
 
-    $hasEnabledMetrics = $false
-    if ($settings.metrics) {
-      $hasEnabledMetrics = ($settings.metrics | Where-Object { $_.enabled -eq $true }).Count -gt 0
-    }
-
-    if ($hasEnabledLogs -or $hasEnabledMetrics) {
-      if ($usesAllLogs) {
-        $status = "Enabled (allLogs)"
-      } else {
-        $status = "Enabled (not allLogs)"
+      return [pscustomobject]@{
+        HasEnabledLogs    = ($enabledLogs.Count -gt 0)
+        HasEnabledMetrics = ($enabledMetrics.Count -gt 0)
+        UsesAllLogs       = $usesAllLogs
       }
-    } else {
-      $status = "Disabled"
     }
+
+    $global:LASTEXITCODE = 0
+    $existing = az monitor diagnostic-settings show --resource $ResourceId --name $DiagName -o json --only-show-errors 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existing)) {
+      $settings = $existing | ConvertFrom-Json
+      $flags = Get-DiagnosticFlags -SettingsObject $settings
+      if ($flags.HasEnabledLogs -or $flags.HasEnabledMetrics) {
+        $status = if ($flags.UsesAllLogs) { "Enabled (allLogs)" } else { "Enabled (not allLogs)" }
+      } else {
+        $status = "Disabled"
+      }
+
+      return [pscustomobject]@{
+        Status            = $status
+        HasEnabledLogs    = $flags.HasEnabledLogs
+        UsesAllLogs       = $flags.UsesAllLogs
+        HasEnabledMetrics = $flags.HasEnabledMetrics
+        ActiveSettingName = $DiagName
+        IsNamedSetting    = $true
+      }
+    }
+
+    # If the named setting does not exist, inspect all settings to avoid false "Not Configured".
+    $global:LASTEXITCODE = 0
+    $allSettingsJson = az monitor diagnostic-settings list --resource $ResourceId -o json --only-show-errors 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($allSettingsJson)) {
+      return [pscustomobject]@{
+        Status            = "Not Configured"
+        HasEnabledLogs    = $false
+        UsesAllLogs       = $false
+        HasEnabledMetrics = $false
+        ActiveSettingName = ""
+        IsNamedSetting    = $false
+      }
+    }
+
+    $allSettings = $allSettingsJson | ConvertFrom-Json
+    if ($null -eq $allSettings) {
+      $allSettings = @()
+    } elseif (-not ($allSettings -is [System.Array])) {
+      $allSettings = @($allSettings)
+    }
+
+    if ($allSettings.Count -eq 0) {
+      return [pscustomobject]@{
+        Status            = "Not Configured"
+        HasEnabledLogs    = $false
+        UsesAllLogs       = $false
+        HasEnabledMetrics = $false
+        ActiveSettingName = ""
+        IsNamedSetting    = $false
+      }
+    }
+
+    $firstEnabled = $allSettings | Where-Object {
+      $flags = Get-DiagnosticFlags -SettingsObject $_
+      $flags.HasEnabledLogs -or $flags.HasEnabledMetrics
+    } | Select-Object -First 1
+
+    if ($null -eq $firstEnabled) {
+      $firstSetting = $allSettings | Select-Object -First 1
+      return [pscustomobject]@{
+        Status            = "Disabled (other setting)"
+        HasEnabledLogs    = $false
+        UsesAllLogs       = $false
+        HasEnabledMetrics = $false
+        ActiveSettingName = $firstSetting.name
+        IsNamedSetting    = $false
+      }
+    }
+
+    $enabledFlags = Get-DiagnosticFlags -SettingsObject $firstEnabled
+    $otherStatus = if ($enabledFlags.UsesAllLogs) { "Enabled (allLogs, other setting)" } else { "Enabled (other setting)" }
 
     return [pscustomobject]@{
-      Status            = $status
-      HasEnabledLogs    = $hasEnabledLogs
-      UsesAllLogs       = $usesAllLogs
-      HasEnabledMetrics = $hasEnabledMetrics
+      Status            = $otherStatus
+      HasEnabledLogs    = $enabledFlags.HasEnabledLogs
+      UsesAllLogs       = $enabledFlags.UsesAllLogs
+      HasEnabledMetrics = $enabledFlags.HasEnabledMetrics
+      ActiveSettingName = $firstEnabled.name
+      IsNamedSetting    = $false
     }
   }
   catch {
@@ -153,6 +215,8 @@ function Get-DiagnosticStatus {
       HasEnabledLogs    = $false
       UsesAllLogs       = $false
       HasEnabledMetrics = $false
+      ActiveSettingName = ""
+      IsNamedSetting    = $false
     }
   }
 }
@@ -166,8 +230,16 @@ function Get-AllLogsSupport {
     return [pscustomobject]@{ Supported = $false; Categories = @() }
   }
 
-  $cats = ($catsJson | ConvertFrom-Json).value
-  if (-not $cats) { $cats = @() }
+  $parsedCats = $catsJson | ConvertFrom-Json
+  if ($null -eq $parsedCats) {
+    $cats = @()
+  } elseif ($parsedCats -is [System.Array]) {
+    $cats = $parsedCats
+  } elseif ($parsedCats.PSObject.Properties.Name -contains "value") {
+    $cats = @($parsedCats.value)
+  } else {
+    $cats = @($parsedCats)
+  }
 
   $allLogsGroup = $cats | Where-Object { $_.categoryType -eq "CategoryGroup" -and $_.name -eq "allLogs" } | Select-Object -First 1
   return [pscustomobject]@{ Supported = [bool]$allLogsGroup; Categories = $cats }
@@ -314,10 +386,11 @@ try {
       }
 
       $statusColor = switch -Wildcard ($diag.Status) {
-        "Enabled (allLogs)"     { "Green" }
+        "Enabled (allLogs*)"    { "Green" }
         "Enabled (not allLogs)" { "Yellow" }
+        "Enabled (other setting)" { "Yellow" }
         "Not Configured"        { "Yellow" }
-        "Disabled"              { "Red" }
+        "Disabled*"             { "Red" }
         default                 { "Gray" }
       }
 
@@ -327,10 +400,10 @@ try {
 
     Write-Log ""
     Write-Log "Summary:" "Cyan"
-    $enabledAllLogs = ($statusResults | Where-Object Status -eq "Enabled (allLogs)").Count
-    $enabledNotAll  = ($statusResults | Where-Object Status -eq "Enabled (not allLogs)").Count
+    $enabledAllLogs = ($statusResults | Where-Object { $_.Status -like "Enabled (allLogs*" }).Count
+    $enabledNotAll  = ($statusResults | Where-Object { $_.Status -eq "Enabled (not allLogs)" -or $_.Status -eq "Enabled (other setting)" }).Count
     $notConfigured  = ($statusResults | Where-Object Status -eq "Not Configured").Count
-    $disabled       = ($statusResults | Where-Object Status -eq "Disabled").Count
+    $disabled       = ($statusResults | Where-Object { $_.Status -like "Disabled*" }).Count
 
     Write-Log "  Enabled (allLogs): $enabledAllLogs" "Green"
     Write-Log "  Enabled (not allLogs): $enabledNotAll" "Yellow"
@@ -379,22 +452,39 @@ try {
     try {
       $typeDisplay = Get-ResourceTypeDisplayName -ResourceType $resource.type
       $diag = Get-DiagnosticStatus -ResourceId $resource.id -DiagName $DiagnosticSettingName
+      $targetDiagnosticSettingName = if (-not [string]::IsNullOrWhiteSpace($diag.ActiveSettingName)) { $diag.ActiveSettingName } else { $DiagnosticSettingName }
 
       # Determine category support and categories up-front (also used to build payload)
       $supportObj = Get-AllLogsSupport -ResourceId $resource.id
       $cats = $supportObj.Categories
       $allLogsSupported = $supportObj.Supported
 
-      # Skip if diagnostic settings are already enabled (any enabled status)
-      if ($diag.Status -match "^Enabled") {
-        $isAllLogs = ($diag.Status -eq "Enabled (allLogs)")
-        $action    = if ($isAllLogs) { "allLogs" } else { "without-allLogs" }
-        $detail    = if ($isAllLogs) { "with allLogs" } else { "(not using allLogs$(if (-not $allLogsSupported) { ' - not supported' }))" }
-        Write-Log "  ✓ Already enabled $detail - skipping" "Green"
+      # Enforce allLogs where supported; otherwise keep previous behavior and skip any enabled diagnostics.
+      $shouldSkip = $false
+      $isAllLogs = $diag.Status -like "Enabled (allLogs*"
+
+      if ($isAllLogs) {
+        $shouldSkip = $true
+      } elseif ((-not $allLogsSupported) -and ($diag.Status -match "^Enabled")) {
+        $shouldSkip = $true
+      }
+
+      if ($shouldSkip) {
+        $action = if ($isAllLogs) { "allLogs" } else { "without-allLogs" }
+        $detail = if ($isAllLogs) { "with allLogs" } else { "(not using allLogs$(if (-not $allLogsSupported) { ' - not supported' }))" }
+        Write-Log "  [OK] Already enabled $detail - skipping" "Green"
         $results += New-ResultObject -Name $resource.name -Type $typeDisplay -ResourceGroup $resource.resourceGroup `
           -Status "AlreadyEnabled" -Action $action -AllLogsSupported $allLogsSupported -PostStatus $diag.Status
         if ($isAllLogs) { $skippedAlreadyAllLogs++ } else { $skippedAlreadyEnabled++ }
         continue
+      }
+
+      if ($allLogsSupported -and $diag.Status -match "^Enabled") {
+        if (-not $diag.IsNamedSetting -and -not [string]::IsNullOrWhiteSpace($diag.ActiveSettingName)) {
+          Write-Log "  i Enforcing allLogs on existing setting '$($diag.ActiveSettingName)'" "Yellow"
+        } else {
+          Write-Log "  i Enforcing allLogs on existing setting '$DiagnosticSettingName'" "Yellow"
+        }
       }
 
       # Need categories to proceed
@@ -415,7 +505,7 @@ try {
       # Apply diagnostic settings using 'create' (idempotent - creates or updates)
       $azArgs = @(
         'monitor', 'diagnostic-settings', 'create',
-        '--name', $DiagnosticSettingName,
+        '--name', $targetDiagnosticSettingName,
         '--resource', $resource.id,
         '--workspace', $lawId,
         '--logs', $logsJson
@@ -434,7 +524,7 @@ try {
         try {
           $errorObj = $output | ConvertFrom-Json -ErrorAction SilentlyContinue
           if ($errorObj.error.code -eq 'Conflict' -or $errorObj.error.message -match 'already used|can''t be reused') {
-            Write-Log "  ✓ Already configured (different diagnostic setting name) - skipping" "Green"
+            Write-Log "  [OK] Already configured (different diagnostic setting name) - skipping" "Green"
             $results += New-ResultObject -Name $resource.name -Type $typeDisplay -ResourceGroup $resource.resourceGroup `
               -Status "AlreadyEnabled" -Action "conflict" -AllLogsSupported $allLogsSupported `
               -PostStatus "Enabled (other diagnostic setting)" -ErrorMessage "No changes made - logs already being sent to this workspace"
@@ -444,9 +534,9 @@ try {
           if ($errorObj.error.message) { $errorMessage = $errorObj.error.message }
         }
         catch {
-          # Not a JSON error response — check raw text as fallback
+          # Not a JSON error response - check raw text as fallback
           if ($output -match "Conflict.*Data sink.*already used" -or $output -match "can't be reused") {
-            Write-Log "  ✓ Already configured (different diagnostic setting name) - skipping" "Green"
+            Write-Log "  [OK] Already configured (different diagnostic setting name) - skipping" "Green"
             $results += New-ResultObject -Name $resource.name -Type $typeDisplay -ResourceGroup $resource.resourceGroup `
               -Status "AlreadyEnabled" -Action "conflict" -AllLogsSupported $allLogsSupported `
               -PostStatus "Enabled (other diagnostic setting)" -ErrorMessage "No changes made - logs already being sent to this workspace"
@@ -457,20 +547,24 @@ try {
         throw "Command failed with exit code $LASTEXITCODE. Error: $errorMessage"
       }
 
-      # Post-apply verification: ensure allLogs is used when supported
-      $post = Get-DiagnosticStatus -ResourceId $resource.id -DiagName $DiagnosticSettingName
-      if ($allLogsSupported -and $post.Status -ne "Enabled (allLogs)") {
+      # Post-apply verification: ensure allLogs is used when supported.
+      $post = Get-DiagnosticStatus -ResourceId $resource.id -DiagName $targetDiagnosticSettingName
+      if ($allLogsSupported -and ($post.Status -notlike "Enabled (allLogs*)")) {
         throw "Verification failed: expected Enabled (allLogs) but got '$($post.Status)'"
       }
+      if (-not $allLogsSupported -and $post.Status -notmatch "^Enabled") {
+        throw "Verification failed: expected enabled diagnostics but got '$($post.Status)'"
+      }
 
-      Write-Log "  ✓ Success (create) - $($post.Status)" "Green"
+      $operation = if ($diag.Status -match "^Enabled" -or $diag.Status -like "Disabled (*") { "update" } else { "create" }
+      Write-Log "  [OK] Success ($operation) - $($post.Status)" "Green"
       $success++
 
       $results += New-ResultObject -Name $resource.name -Type $typeDisplay -ResourceGroup $resource.resourceGroup `
-        -Status "Success" -Action "create" -AllLogsSupported $allLogsSupported -PostStatus $post.Status
+        -Status "Success" -Action $operation -AllLogsSupported $allLogsSupported -PostStatus $post.Status
     }
     catch {
-      Write-Log "  ✗ Failed: $($_.Exception.Message)" "Red"
+      Write-Log "  [FAIL] Failed: $($_.Exception.Message)" "Red"
       $failed++
 
       $results += New-ResultObject -Name $resource.name -Type $typeDisplay -ResourceGroup $resource.resourceGroup `
@@ -499,6 +593,7 @@ try {
   # Summary
   $skipped = ($results | Where-Object Status -eq "AlreadyEnabled").Count
   $created = ($results | Where-Object Action -eq "create").Count
+  $updated = ($results | Where-Object Action -eq "update").Count
 
   Write-Log ""
   Write-Log "=== Diagnostic Settings Summary ===" "Cyan"
@@ -513,6 +608,7 @@ try {
   Write-Log ""
   Write-Log "Changes Made:" "Cyan"
   Write-Log "  - Created: $created" $(if ($created -gt 0) { "Green" } else { "White" })
+  Write-Log "  - Updated: $updated" $(if ($updated -gt 0) { "Green" } else { "White" })
   Write-Log "  - Success: $success" "Green"
   Write-Log "  - Failed: $failed" $(if ($failed -gt 0) { "Red" } else { "Green" })
   Write-Log ""
@@ -550,3 +646,5 @@ catch {
   Write-Log "Execution time: $($duration.TotalSeconds.ToString('F1')) seconds" "Gray"
   exit 2
 }
+
+
