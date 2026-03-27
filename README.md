@@ -25,12 +25,26 @@ AVD/
 
 ## AVD Projects at a Glance
 
+<<<<<<< HEAD
 | Project Folder | Purpose | What It Is Used For | How It Helps Customer AVD Deployments | Folder Link |
 | -- | -- | -- | -- | -- |
 | `AVD-Diagnostics` | Enable diagnostic settings across all AVD resources (host pools, app groups, workspaces). | Foundation step before alerting, troubleshooting, and audit workflows. | Ensures consistent telemetry coverage in Log Analytics so operations teams can detect, investigate, and prove service health without manual per-resource setup. | [AVD-Diagnostics](AVD-Diagnostics/) |
 | `AVD-AzAlerts` | Deploy WVDErrors-based category alerts and a Logic App pipeline for detailed emails. | Monitoring connection failures, authentication/authorization issues, session host health, network/gateway problems, and FSLogix profile errors. | Delivers actionable alert emails with host names, error codes, and troubleshooting context, reducing time to triage and restore user access. | [AVD-AzAlerts](AVD-AzAlerts/) |
 | `AVD-SessionHostMonitoring` | Create or update DCR-based performance collection and optional AMA or DCR policy association at scale. | Standing up Insights telemetry for CPU, memory, disk, network, GPU, and session quality counters across session hosts. | Standardizes data collection and policy rollout with safe re-runs, giving customers consistent performance baselines for capacity planning and proactive operations. | [AVD-SessionHostMonitoring](AVD-SessionHostMonitoring/) |
 | `AVD-SessionHost-Insights-Alerts` | Deploy 7 consolidated session-host Insights alert categories and detailed email workflow. | Monitoring performance degradation, session lifecycle issues, disk pressure, correlated FSLogix signals, event logs, and GPU encoding behavior. | Provides context-rich performance alerts with specific breached counters and affected hosts so teams can act quickly before widespread end-user impact. | [AVD-SessionHost-Insights-Alerts](AVD-SessionHost-Insights-Alerts/) |
+=======
+| # | Script | Purpose | What It Does | Quick Start |
+| -- | ------ | ------- | ------------ | ----------- |
+| 1 | `AVD-Enable-Diagnostic-Logs.ps1` | Enable AVD diagnostic logs | Discovers all host pools, app groups, and workspaces in a subscription and configures `allLogs` diagnostic settings to route telemetry to Log Analytics. Exports a CSV status report. | `.\AVD-Diagnostics\AVD-Enable-Diagnostic-Logs.ps1 -SubscriptionId "YOUR-SUB-ID" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG"` |
+| 2 | `AVD-RBAC-Precheck.ps1` | Validate RBAC before deployment | Evaluates whether the signed-in user (or a specified principal) has the required Azure RBAC actions across resource group, workspace, and subscription scopes. Outputs a permission report table and optional CSV. Read-only — no changes made. | `.\AVD-AzAlerts\AVD-RBAC-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG"` |
+| 3 | `AVD-Deploy-Alert-LogicApp.ps1` | Deploy WVDErrors alerts + email Logic App | **Primary entry point for WVDErrors alerting.** Creates/updates the Logic App, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 16 `AVD-Category-*` scheduled query alerts. Single command — no other scripts needed. | `.\AVD-AzAlerts\AVD-Deploy-Alert-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-alert-details" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmails "team@contoso.com"` |
+| 4 | `AVD-Category-Alerts.ps1` | Create AVD category alert rules | Creates and maintains `AVD-Category-*` scheduled query alerts and the webhook action group. Called automatically by script #3 — run directly only when you need standalone alert creation without the Logic App pipeline. | `.\AVD-AzAlerts\AVD-Category-Alerts.ps1 -DetailedResultsWebhookUrl "https://your-logicapp-callback-url"` |
+| 5 | `AVD-Webhook-TestAlert.ps1` | Validate webhook end-to-end | Posts a synthetic Azure Monitor alert payload to a Logic App callback URL. Use after deployment to verify emails arrive. | `.\AVD-AzAlerts\AVD-Webhook-TestAlert.ps1 -ResourceGroup "YOUR-RG" -LogicAppName "AVD-alert-details"` |
+| 6 | `AVD-Insights-Enable-PerfMetrics-Monitoring.ps1` | Deploy DCR for perf counters | Creates a DCR with 28 perf counters into `InsightsMetrics` and `Perf`, then runs customer-selected mode: DCR only, DCR+Policy, or DCR+Policy+Remediation across all or selected host-pool resource groups. Exports a timestamped CSV report each run. | `.\AVD-SessionHostMonitoring\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2"` |
+| 7 | `AVD-SessionHost-Insights-Alerts-Precheck.ps1` | Validate Insights prerequisites | Checks RBAC permissions, Azure CLI extensions, LAW connectivity, and verifies that Perf counter data is flowing to the workspace. Read-only — no changes made. | `.\AVD-SessionHost-Insights-Alerts\AVD-SessionHost-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"` |
+| 8 | `AVD-SessionHost-Insights-Deploy-LogicApp.ps1` | Deploy Insights alerts + email Logic App | **Primary entry point for Insights alerting.** Creates/updates the Logic App, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 7 `AVD-SessionHost-Insights-Category-*` alerts. Single command — no other scripts needed. | `.\AVD-SessionHost-Insights-Alerts\AVD-SessionHost-Insights-Deploy-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-SessionHost-Insights-Alert-Email" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmail "team@contoso.com"` |
+| 9 | `AVD-SessionHost-Insights-Category-Alerts.ps1` | Create Insights alert rules only | Reads alert definitions from `alerts-config.insights.json`, loads KQL query files, and creates Azure Monitor scheduled query rules. Called automatically by script #8 — run directly only when you need standalone alert creation without the Logic App pipeline. | `.\AVD-SessionHost-Insights-Alerts\AVD-SessionHost-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2"` |
+>>>>>>> a1181b6814da02f81670c39565a8415ae9598e82
 
 ## Monitoring Decision Guide
 
@@ -38,7 +52,164 @@ Use this diagram to choose the correct AVD deployment path based on the monitori
 
 ![AVD Monitoring Decision Guide](assets/avd-monitoring-decision-guide.svg)
 
+<<<<<<< HEAD
 Use the links in the Documentation section below for full deployment commands and runbooks.
+=======
+    subgraph PATH_A ["WVDErrors Alert Emails"]
+        A1["1. Enable Diagnostic Settings\nAVD-Enable-Diagnostic-Logs.ps1"]
+        A2["2. Deploy Webhook Logic App\nAVD-Deploy-Alert-LogicApp.ps1"]
+        A3["3. Authorize Office 365 connection\nin Azure Portal"]
+        A4["4. (Optional) Send test alert\nAVD-Webhook-TestAlert.ps1"]
+        A1 --> A2 --> A3 --> A4
+    end
+
+    subgraph PATH_B ["Insights Performance Alert Emails"]
+        B1["1. Enable Diagnostic Settings\nAVD-Enable-Diagnostic-Logs.ps1"]
+        B2["2. Deploy DCR\nAVD-Insights-Enable-PerfMetrics-Monitoring.ps1"]
+        B3["3. Deploy Insights Logic App\nAVD-SessionHost-Insights-Deploy-LogicApp.ps1"]
+        B4["4. Authorize Office 365 connection\nin Azure Portal"]
+        B5["5. (Optional) Send test alert\nAVD-Webhook-TestAlert.ps1"]
+        B1 --> B2 --> B3 --> B4 --> B5
+    end
+
+    subgraph PATH_C ["Both: Full Monitoring Stack"]
+        C1["1. Enable Diagnostic Settings\nAVD-Enable-Diagnostic-Logs.ps1"]
+        C2["2a. Deploy Webhook Logic App\nAVD-Deploy-Alert-LogicApp.ps1"]
+        C3["2b. Deploy DCR\nAVD-Insights-Enable-PerfMetrics-Monitoring.ps1"]
+        C4["3. Deploy Insights Logic App\nAVD-SessionHost-Insights-Deploy-LogicApp.ps1"]
+        C5["4. Authorize both Office 365\nconnections in Azure Portal"]
+        C6["5. (Optional) Send test alerts\nAVD-Webhook-TestAlert.ps1"]
+        C1 --> C2
+        C1 --> C3
+        C3 --> C4
+        C2 --> C5
+        C4 --> C5
+        C5 --> C6
+    end
+```
+
+---
+
+## Quick Start: AVD-AzAlerts (WVDErrors)
+
+Deploys 16 consolidated WVDErrors category alerts + a Logic App that sends detailed email notifications with per-alert KQL re-queries.
+
+### AVD-AzAlerts Requirements (auto-installed by the script)
+
+- **RBAC**: Owner or Contributor on the target resource group, **or** Monitoring Contributor + Log Analytics Reader
+- A Log Analytics workspace already receiving AVD diagnostic logs
+- An Office 365 mailbox for sending alert emails
+
+### Step 1: Enable diagnostics (if not already done)
+
+```powershell
+.\AVD-Diagnostics\AVD-Enable-Diagnostic-Logs.ps1 `
+  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+  -WorkspaceName "YOUR-LAW-NAME" `
+  -WorkspaceResourceGroupName "YOUR-LAW-RG"
+```
+
+### Step 2: Deploy alerts + Logic App (single command)
+
+```powershell
+.\AVD-AzAlerts\AVD-Deploy-Alert-LogicApp.ps1 `
+  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+  -ResourceGroupName "YOUR-ALERTS-RG" `
+  -LogicAppName "AVD-alert-details" `
+  -Location "eastus2" `
+  -WorkspaceName "YOUR-LAW-NAME" `
+  -WorkspaceResourceGroupName "YOUR-LAW-RG" `
+  -SendFromEmail "alerts@contoso.com" `
+  -SendToEmails "avd-oncall@contoso.com","noc@contoso.com" `
+  -Office365ConnectionName "avd-alerts-office365"
+```
+
+This single command will:
+
+1. Create/update the Office 365 API connection
+2. Deploy the Logic App with system-assigned managed identity
+3. Assign Log Analytics Reader to the Logic App identity
+4. Create the webhook action group
+5. Bootstrap any missing `AVD-Category-*` alert rules
+6. Route all alerts to the detailed webhook action group
+
+> **Note:** Authorize the Office 365 API connection in Azure Portal with valid mailbox credentials before emails will flow.
+
+### Step 3 (Optional): Validate
+
+```powershell
+.\AVD-AzAlerts\AVD-Webhook-TestAlert.ps1 -WebhookUrl "<callback-url-from-step-2>"
+```
+
+See [AVD-AzAlerts/README.md](AVD-AzAlerts/README.md) for full details, RBAC breakdown, and alert categories.
+
+---
+
+## Quick Start: AVD-SessionHostMonitoring (Insights)
+
+Deploys a Data Collection Rule with 28 perf counters, then runs a guided flow for DCR-only or policy/remediation enforcement across host-pool resource groups, and finally deploys 7 Insights category alerts + a Logic App for detailed email notifications.
+
+### Insights Requirements
+
+- Azure CLI installed and authenticated (`az login`)
+- Azure CLI extension: `scheduled-query` (auto-installed by alert scripts)
+- **RBAC for DCR setup**: Monitoring Contributor on the DCR resource group and Log Analytics workspace + Desktop Virtualization Reader on the subscription
+- **RBAC for alerts**: Owner or Contributor on the target resource group, **or** Monitoring Contributor + Log Analytics Reader
+- A Log Analytics workspace
+- AVD Diagnostics enabled (for WVDCheckpoints, WVDAgentHealthStatus tables used by some alert queries)
+- An Office 365 mailbox for sending alert emails
+
+### Step 1: Run DCR/policy workflow
+
+```powershell
+.\AVD-SessionHostMonitoring\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 `
+  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+  -LawRG "YOUR-LAW-RG" `
+  -LawName "YOUR-LAW-NAME" `
+  -DcrRG "YOUR-DCR-RG" `
+  -DcrName "AVD-SessionHost-DCR" `
+  -Location "eastus2"
+```
+
+The script will:
+
+1. Create a DCR collecting 28 perf counters into both `InsightsMetrics` and `Perf` tables
+2. Prompt for action mode (`DcrOnly`, `DcrAndPolicy`, `DcrPolicyRemediation`)
+3. Prompt to target all host-pool RGs or selected host pools (policy modes)
+4. Assign/update built-in Azure Policy per targeted RG and optionally create remediation per RG
+5. Save a timestamped CSV report with per-scope results
+
+> **Tip:** Add `-NonInteractive` with `-ExecutionMode` for automation. Use `-ScopeSelection SpecificHostPools -HostPoolNames ...` to target named pools. Use `-PolicyScopeResourceGroup` to override host-pool discovery with explicit RG list. Add `-WhatIf` for preview.
+
+### Step 2: Deploy Insights alerts + Logic App (single command)
+
+```powershell
+.\AVD-SessionHost-Insights-Alerts\AVD-SessionHost-Insights-Deploy-LogicApp.ps1 `
+  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+  -ResourceGroupName "YOUR-ALERTS-RG" `
+  -LogicAppName "AVD-SessionHost-Insights-Alert-Email" `
+  -Location "eastus2" `
+  -WorkspaceName "YOUR-LAW-NAME" `
+  -WorkspaceResourceGroupName "YOUR-LAW-RG" `
+  -SendFromEmail "alerts@contoso.com" `
+  -SendToEmail "avd-oncall@contoso.com"
+```
+
+This single command will:
+
+1. Create/update the Office 365 API connection
+2. Deploy the Logic App with system-assigned managed identity
+3. Assign Log Analytics Reader to the Logic App identity
+4. Create the webhook action group
+5. Bootstrap any missing `AVD-SessionHost-Insights-Category-*` alert rules (calls `AVD-SessionHost-Insights-Category-Alerts.ps1` internally)
+6. Route all Insights alerts to the detailed webhook action group
+
+> **Note:** Wait 5-15 minutes after Step 1 for perf counter data to appear in Log Analytics before alert queries can evaluate.
+
+See [AVD-SessionHost-Insights-Alerts/README.md](AVD-SessionHost-Insights-Alerts/README.md) for alert categories, threshold tuning, and advanced options.
+
+---
+>>>>>>> a1181b6814da02f81670c39565a8415ae9598e82
 
 ## Important Notes
 
