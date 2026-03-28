@@ -1,5 +1,7 @@
 ﻿# Azure Virtual Desktop - Diagnostics, Insights, and Rich Email Alert Automation
 
+<!-- markdownlint-configure-file {"MD033": false} -->
+
 **Last Updated:** March 2026
 
 PowerShell automation for Azure Virtual Desktop that goes beyond standard Azure Monitor alert emails. These scripts deploy rich, detailed email alerts powered by Logic Apps that re-query Log Analytics at alert time, delivering operator-friendly HTML emails with affected host names, error codes, user names, and troubleshooting context.
@@ -18,8 +20,7 @@ AVD/
 |- AVD-Diagnostics/             # Enable diagnostic logs on AVD resources
 |- AVD-AzAlerts/                # WVDErrors category alerts + Logic App email pipeline
 |- AVD-SessionHostMonitoring/   # DCR and session-host monitoring setup
-|- AVD-Insights-Alerts/         # Insights category alert rules + Logic App pipeline
-|- AVD-SessionHost-Insights-Alerts/ # Historical report outputs from prior runs
+|- AVD-SessionHost-Insights-Alerts/ # Insights category alert rules + Logic App pipeline
 |- assets/
 |  |- avd-monitoring-decision-guide.svg
 |- README.md
@@ -32,14 +33,15 @@ AVD/
 | `AVD-Diagnostics` | Enable diagnostic settings across host pools, app groups, and workspaces. | Foundation step before alerting, troubleshooting, and audit workflows. | Ensures consistent telemetry coverage in Log Analytics without manual per-resource setup. | [AVD-Diagnostics](AVD-Diagnostics/) |
 | `AVD-AzAlerts` | Deploy WVDErrors-based category alerts and Logic App detailed-email pipeline. | Monitoring connection failures, auth and policy issues, session host health, network and gateway issues, and FSLogix profile failures. | Delivers actionable alert emails with host names, error codes, and context so operations teams can triage quickly. | [AVD-AzAlerts](AVD-AzAlerts/) |
 | `AVD-SessionHostMonitoring` | Create or update DCR-based performance collection and optional AMA or DCR policy association. | Enabling Insights telemetry for session host performance counters at scale. | Standardizes data collection for capacity planning, baselining, and proactive operations. | [AVD-SessionHostMonitoring](AVD-SessionHostMonitoring/) |
-| `AVD-Insights-Alerts` | Deploy consolidated Insights alert categories with Logic App detailed-email workflow. | Monitoring host performance degradation, session lifecycle issues, disk pressure, correlated FSLogix signals, and GPU behavior. | Provides context-rich performance alerts with breached counters and affected hosts to reduce time to mitigation. | [AVD-Insights-Alerts](AVD-Insights-Alerts/) |
-| `AVD-SessionHost-Insights-Alerts` | Preserve generated report artifacts from previous session-host insights deployments. | Historical reference and deployment evidence review. | Helps teams retain run history and exported reports for troubleshooting and audit continuity. | [AVD-SessionHost-Insights-Alerts](AVD-SessionHost-Insights-Alerts/) |
+| `AVD-SessionHost-Insights-Alerts` | Deploy consolidated Insights alert categories with Logic App detailed-email workflow. | Monitoring host performance degradation, session lifecycle issues, disk pressure, correlated FSLogix signals, event-based FSLogix profile errors, and GPU behavior. | Provides context-rich performance alerts with breached counters and affected hosts to reduce time to mitigation. | [AVD-SessionHost-Insights-Alerts](AVD-SessionHost-Insights-Alerts/) |
 
 ## Monitoring Decision Guide
 
 Use this diagram to choose the correct AVD deployment path based on the monitoring outcome you need.
 
-![AVD Monitoring Decision Guide](assets/avd-monitoring-decision-guide.svg)
+<img src="assets/avd-monitoring-decision-guide.svg" alt="AVD Monitoring Decision Guide" width="1800" />
+
+[Open full-size SVG](assets/avd-monitoring-decision-guide.svg)
 
 Use the links in the Documentation section below for full deployment commands and runbooks.
 
@@ -67,11 +69,11 @@ Both Logic App deployment scripts auto-create the Office 365 API connection, but
 | Alert Matrix (WVDErrors) | [AVD-AzAlerts/AVD-Alerts-Matrix.md](AVD-AzAlerts/AVD-Alerts-Matrix.md) |
 | Runbook (WVDErrors) | [AVD-AzAlerts/AVD-Alerts-Runbook.md](AVD-AzAlerts/AVD-Alerts-Runbook.md) |
 | DCR and AMA Setup | [AVD-SessionHostMonitoring/README.md](AVD-SessionHostMonitoring/README.md) |
-| Insights Alerts | [AVD-Insights-Alerts/README.md](AVD-Insights-Alerts/README.md) |
-| Alert Matrix (Insights) | [AVD-Insights-Alerts/Insights-Alert-Matrix.md](AVD-Insights-Alerts/Insights-Alert-Matrix.md) |
-| Runbook (Insights) | [AVD-Insights-Alerts/Insights-Runbook.md](AVD-Insights-Alerts/Insights-Runbook.md) |
+| Insights Alerts | [AVD-SessionHost-Insights-Alerts/README.md](AVD-SessionHost-Insights-Alerts/README.md) |
+| Alert Matrix (Insights) | [AVD-SessionHost-Insights-Alerts/Insights-Alert-Matrix.md](AVD-SessionHost-Insights-Alerts/Insights-Alert-Matrix.md) |
+| Runbook (Insights) | [AVD-SessionHost-Insights-Alerts/Insights-Runbook.md](AVD-SessionHost-Insights-Alerts/Insights-Runbook.md) |
 | Monitoring Decision Diagram | [assets/avd-monitoring-decision-guide.svg](assets/avd-monitoring-decision-guide.svg) |
-| Historical Session Host Reports | [AVD-SessionHost-Insights-Alerts](AVD-SessionHost-Insights-Alerts/) |
+| Session Host Insights Project Folder | [AVD-SessionHost-Insights-Alerts](AVD-SessionHost-Insights-Alerts/) |
 
 ## Related Resources
 
