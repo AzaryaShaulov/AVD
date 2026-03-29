@@ -53,7 +53,7 @@ let pageFaultsRecent = Perf
 let pageFaultsSpike = pageFaultsRecent
 | join kind=inner pageFaultsBaseline on Computer
 | where AvgValue > (BaselineAvg * _baselineMultiplier)
-| project Computer, Signal = "PageFaults", AvgValue = round(AvgValue, 1), MaxValue = round(MaxValue, 1), SampleCount;
+| project Computer, Signal = "PageFaults-Baseline", AvgValue = round(AvgValue, 1), MaxValue = round(MaxValue, 1), SampleCount;
 let diskSlow = Perf
 | where TimeGenerated > ago(15m)
 | where ObjectName == "LogicalDisk"

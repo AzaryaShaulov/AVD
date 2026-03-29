@@ -250,6 +250,7 @@ Fires when **any** correlated signal breaches: CorrelatedHosts or FSLogixCorrela
 ### CorrelatedHosts
 
 **Signal:** Session host breaching 2+ performance signals simultaneously.
+Alert output signal format: `CorrelatedHosts(<active-signals>)`, for example `CorrelatedHosts(CPU+Memory)`.
 
 **Impact:** Host under significant stress across multiple dimensions. Higher likelihood of user-facing issues.
 

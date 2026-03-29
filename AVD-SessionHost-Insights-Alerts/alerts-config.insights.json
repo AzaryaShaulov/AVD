@@ -35,7 +35,7 @@
       "alerts": [
         {
           "name": "AVD-Insights-Category-HostPerformance",
-          "description": "One or more host-performance signals (CPU, Memory, MemoryCommit, Pages, PageFaults, DiskTiming) breached thresholds.",
+          "description": "One or more host-performance signals (CPU, Memory, MemoryCommit, Pages, PageFaults-Baseline, DiskTiming) breached thresholds.",
           "queryFile": "queries/category-host-performance.kql",
           "severity": 1,
           "evaluationFrequency": "PT10M",

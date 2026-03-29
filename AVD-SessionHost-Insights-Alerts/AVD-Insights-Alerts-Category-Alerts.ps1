@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 ==============================================================================
 SCRIPT VERSION: 1.0
@@ -12,10 +12,10 @@ QUICK START:
    - Location: Your Azure region (e.g., eastus, westus2)
 
 2. Run the script:
-   .\AVD-Insights-Category-Alerts.ps1
+   .\AVD-Insights-Alerts-Category-Alerts.ps1
 
 3. Or override any parameter:
-   .\AVD-Insights-Category-Alerts.ps1 -SubscriptionId "12345678-..." `
+   .\AVD-Insights-Alerts-Category-Alerts.ps1 -SubscriptionId "12345678-..." `
      -ResourceGroup "rg-avd" -WorkspaceName "law-avd" -Location "eastus2" `
      -WebhookUrl "https://contoso.logic.azure.com/workflows/..."
 ==============================================================================
@@ -83,14 +83,14 @@ QUICK START:
   Preview changes without creating or modifying resources.
 
 .EXAMPLE
-  .\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "rg-avd-prod" `
+  .\AVD-Insights-Alerts-Category-Alerts.ps1 -ResourceGroup "rg-avd-prod" `
     -WorkspaceName "law-avd-prod" -Location "eastus2"
 
 .EXAMPLE
-  .\AVD-Insights-Category-Alerts.ps1 -CategoryFilter "HostPerformance" -WhatIf
+  .\AVD-Insights-Alerts-Category-Alerts.ps1 -CategoryFilter "HostPerformance" -WhatIf
 
 .EXAMPLE
-  .\AVD-Insights-Category-Alerts.ps1 -AlertFilter "AVD-Insights-Category-HostPerformance" -Severity 1
+  .\AVD-Insights-Alerts-Category-Alerts.ps1 -AlertFilter "AVD-Insights-Category-HostPerformance" -Severity 1
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -208,7 +208,7 @@ function Read-KqlFile {
     throw "KQL query file not found: $QueryFilePath"
   }
 
-  # Strip // comment lines — they break when KQL is flattened to a single line
+  # Strip // comment lines - they break when KQL is flattened to a single line
   $lines = Get-Content $QueryFilePath
   $filtered = $lines | Where-Object { $_ -notmatch '^\s*//' }
   return ($filtered -join "`n").Trim()
@@ -820,3 +820,5 @@ $duration = (Get-Date) - $ScriptStartTime
 Write-Log ""
 Write-Log "Execution time: $($duration.TotalSeconds.ToString('F1')) seconds" "Gray"
 Write-Log "Done." "Green"
+
+

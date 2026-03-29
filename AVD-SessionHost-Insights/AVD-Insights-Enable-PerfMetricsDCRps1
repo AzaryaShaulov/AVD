@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Creates or updates a Data Collection Rule (DCR) for AVD session host monitoring,
   discovers all AVD host pools in the subscription, and interactively associates
@@ -58,25 +58,25 @@
 
 .EXAMPLE
   # Create DCR, discover all host pools, and interactively associate (no AMA install)
-  .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
+  .\AVD-Insights-Enable-PerfMetricsDCRps1 -SubscriptionId "YOUR-SUB-ID" `
     -LawRG "rg-avd-monitoring" -LawName "law-avd-prod" -DcrRG "rg-avd-monitoring" `
     -DcrName "AVD-SessionHost-DCR" -Location "eastus2"
 
 .EXAMPLE
   # Same as above, but also install AMA on VMs that are missing it
-  .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
+  .\AVD-Insights-Enable-PerfMetricsDCRps1 -SubscriptionId "YOUR-SUB-ID" `
     -LawRG "rg-avd-monitoring" -LawName "law-avd-prod" -DcrRG "rg-avd-monitoring" `
     -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -InstallAma
 
 .EXAMPLE
   # WhatIf preview - no changes applied, host pools listed
-  .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
+  .\AVD-Insights-Enable-PerfMetricsDCRps1 -SubscriptionId "YOUR-SUB-ID" `
     -LawRG "rg-avd-monitoring" -LawName "law-avd-prod" -DcrRG "rg-avd-monitoring" `
     -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -WhatIf
 
 .EXAMPLE
   # With transcript logging
-  .\AVD-Insights-Enable-PerfMetrics-Monitoring.ps1 -SubscriptionId "YOUR-SUB-ID" `
+  .\AVD-Insights-Enable-PerfMetricsDCRps1 -SubscriptionId "YOUR-SUB-ID" `
     -LawRG "rg-avd-monitoring" -LawName "law-avd-prod" -DcrRG "rg-avd-monitoring" `
     -DcrName "AVD-SessionHost-DCR" -Location "eastus2" `
     -TranscriptPath "C:\Logs\DCR-Setup.log" -Verbose
@@ -764,7 +764,7 @@ try {
  NEXT STEPS - Azure Policy for Azure Monitor Agent (AMA) Deployment
 ================================================================================
 
-After running AVD-Insights-Enable-PerfMetrics-Monitoring.ps1, the Data
+After running AVD-Insights-Enable-PerfMetricsDCRps1, the Data
 Collection Rule (DCR) has been created and associated with your host pools.
 
 To ensure the Azure Monitor Agent is installed (and stays installed) on every
@@ -814,3 +814,4 @@ Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC
     }
   }
 }
+

@@ -1,4 +1,4 @@
-
+﻿
 AVD-Alerts/avd-alerts-report.csv
 AVD-Alerts/avd-alerts-report-305f553d.csv
 AVD-Alerts/Deploy-AVD-Teams-Notifier.ps1
@@ -10,5 +10,6 @@ AVD-AzAlerts/*.csv
 **/*.log
 
 # Work-in-progress scripts (not ready for repo)
-AVD-SessionHostMonitoring/AVD-Insights-Deploy-AMA-Agent.ps1
+AVD-SessionHost-Insights/AVD-Insights-Deploy-AMA-Agent.ps1
+
 

@@ -1,4 +1,4 @@
-<#
+﻿<#
 ==============================================================================
 SCRIPT VERSION: 2.0
 LAST UPDATED: March 16, 2026
@@ -64,7 +64,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     Optional output path for post-run CSV summary report.
 
 .EXAMPLE
-    .\AVD-Insights-Deploy-LogicApp.ps1 `
+    .\AVD-Insights-Alerts-Deploy-LogicApp.ps1 `
       -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
       -ResourceGroupName "rg-avd-monitoring" `
       -LogicAppName "AVD-Insights-Alert-Email" `
@@ -76,7 +76,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
       -Office365ConnectionName "avd-alerts-office365"
 
 .EXAMPLE
-    .\AVD-Insights-Deploy-LogicApp.ps1 `
+    .\AVD-Insights-Alerts-Deploy-LogicApp.ps1 `
       -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
       -ResourceGroupName "rg-avd-monitoring" `
       -LogicAppName "AVD-Insights-Alert-Email" `
@@ -90,7 +90,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     - Deploys/updates Logic App workflow resources used for detailed Insights notifications.
     - Ensures AVD-Insights-Detailed action group webhook receiver is present and points to callback URL.
     - Assigns Log Analytics Reader to the Logic App managed identity for query access.
-    - Verifies required AVD-Insights alerts exist and bootstraps them via AVD-Insights-Category-Alerts.ps1 when missing.
+    - Verifies required AVD-Insights alerts exist and bootstraps them via AVD-Insights-Alerts-Category-Alerts.ps1 when missing.
     - Applies detailed-only routing for Insights alerts after webhook deployment.
     - Reuses existing 'avd-alerts-office365' Office 365 API connection when available.
 
@@ -354,12 +354,12 @@ function Ensure-InsightsAlertsExist {
         return
     }
 
-    $deployAlertsScript = Join-Path $PSScriptRoot "AVD-Insights-Category-Alerts.ps1"
+    $deployAlertsScript = Join-Path $PSScriptRoot "AVD-Insights-Alerts-Category-Alerts.ps1"
     if (-not (Test-Path $deployAlertsScript)) {
-        throw "Could not find AVD-Insights-Category-Alerts.ps1 at '$deployAlertsScript'."
+        throw "Could not find AVD-Insights-Alerts-Category-Alerts.ps1 at '$deployAlertsScript'."
     }
 
-    Write-Host "Detected $($missingAlertNames.Count) missing AVD-Insights alert(s). Bootstrapping via AVD-Insights-Category-Alerts.ps1..." -ForegroundColor Yellow
+    Write-Host "Detected $($missingAlertNames.Count) missing AVD-Insights alert(s). Bootstrapping via AVD-Insights-Alerts-Category-Alerts.ps1..." -ForegroundColor Yellow
 
     & $deployAlertsScript `
         -SubscriptionId $SubscriptionId `
@@ -373,7 +373,7 @@ function Ensure-InsightsAlertsExist {
         -CreateOnly $true
 
     if ($LASTEXITCODE -ne 0) {
-        throw "Bootstrap alert creation via AVD-Insights-Category-Alerts.ps1 failed."
+        throw "Bootstrap alert creation via AVD-Insights-Alerts-Category-Alerts.ps1 failed."
     }
 
     # Verify bootstrap result
@@ -608,7 +608,7 @@ Perf
     # --- Category: HostPerformance ---
     @{
         Name        = "AVD-Insights-Category-HostPerformance"
-        Description = "Host-performance category alert: CPU, Memory, MemoryCommit, Pages, PageFaults, DiskTiming."
+        Description = "Host-performance category alert: CPU, Memory, MemoryCommit, Pages, PageFaults-Baseline, DiskTiming."
         Kql         = @"
 Perf
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
@@ -799,9 +799,9 @@ $alertEmailHtmlExpr = @'
 )}
 '@
 
-$repoBaseUrl     = "https://github.com/AzaryaShaulov/AVD/blob/main/AVD-SessionHostMonitoring/AVD-Insights-Alerts"
-$alertMatrixUrl  = "$repoBaseUrl/Insights-Alert-Matrix.md"
-$runbookUrl      = "$repoBaseUrl/Insights-Runbook.md"
+$repoBaseUrl     = "https://github.com/AzaryaShaulov/AVD/blob/main/AVD-SessionHost-Insights-Alerts"
+$alertMatrixUrl  = "$repoBaseUrl/AVD-Insights-Alert-Matrix.md"
+$runbookUrl      = "$repoBaseUrl/AVD-Insights-Alerts-Runbook.md"
 
 $alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$WorkspaceName', $WorkspaceName)
 $alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$WorkspaceId', $WorkspaceId)
@@ -1200,7 +1200,7 @@ Write-Host "3. Your Azure Monitor alert rule names should match one of the follo
 $alertDefinitions | ForEach-Object { Write-Host "   - $($_.Name)" }
 Write-Host "4. If no rule name matches, the script uses the fallback Perf query."
 Write-Host "5. Detailed webhook action group: $DetailedActionGroupName ($DetailedWebhookReceiverName)"
-Write-Host "6. If AVD-Insights alerts were missing, they were auto-created via AVD-Insights-Category-Alerts.ps1."
+Write-Host "6. If AVD-Insights alerts were missing, they were auto-created via AVD-Insights-Alerts-Category-Alerts.ps1."
 Write-Host "7. Existing AVD-Insights alerts were switched to detailed-only action group routing."
 
 $ScriptEndTime = Get-Date
@@ -1241,3 +1241,5 @@ try {
 catch {
     Write-Warning "Failed to write CSV report to '$CsvPath': $($_.Exception.Message)"
 }
+
+

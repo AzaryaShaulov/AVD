@@ -346,6 +346,6 @@ Required diagnostic log categories by alert:
 
 ## Tuning
 
-- **Severity override:** Pass `-Severity 0` (Critical) or `-Severity 2` (Warning) to `AVD-Category-Alerts.ps1` to override the default for all alerts.
+- **Severity override:** Pass `-Severity 0` (Critical) or `-Severity 2` (Warning) to `AVD-AzAlerts-Category-Alerts.ps1` to override the default for all alerts.
 - **Evaluation cadence:** Default is every 10 minutes with a 15-minute window. These are defined as `$EvalFrequency` and `$WindowSize` in the script.
-- **Adding new error codes:** Add `CodeSymbolic` values to the appropriate category's KQL `where` clause in the `$alertDefinitions` array in `AVD-Category-Alerts.ps1`.
+- **Adding new error codes:** Add `CodeSymbolic` values to the appropriate category's KQL `where` clause in the `$alertDefinitions` array in `AVD-AzAlerts-Category-Alerts.ps1`.

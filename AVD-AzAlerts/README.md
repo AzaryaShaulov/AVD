@@ -18,7 +18,7 @@ Standard Azure Monitor emails contain only the alert name, severity, and a porta
 
 1. Use `AVD-RBAC-Precheck.ps1` before deployment or role changes.
 2. Run `AVD-Deploy-Alert-LogicApp.ps1` — this is the single deployment entry point.
-3. The webhook script auto-creates missing `AVD-Category-*` alerts via `AVD-Category-Alerts.ps1` (if needed), then switches routing to detailed-only.
+3. The webhook script auto-creates missing `AVD-Category-*` alerts via `AVD-AzAlerts-Category-Alerts.ps1` (if needed), then switches routing to detailed-only.
 4. Optionally run `AVD-Webhook-TestAlert.ps1` to validate callback processing.
 
 ## Post-Deployment: Authorize Office 365 Connection
@@ -38,7 +38,7 @@ After deploying `AVD-Deploy-Alert-LogicApp.ps1`, the Office 365 API connection m
 | -- | ------ | ------- | ------------ | -------------------------- |
 | 1 | `AVD-RBAC-Precheck.ps1` | Validate RBAC permissions | Evaluates whether the signed-in user has the required Azure RBAC actions across resource group, workspace, and subscription scopes. Outputs a permission report. Read-only. | `\.\AVD-RBAC-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG"` |
 | 2 | `AVD-Deploy-Alert-LogicApp.ps1` | **Primary: deploy alerts + email pipeline** | Creates/updates the Logic App workflow, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 16 `AVD-Category-*` scheduled query alerts. Single command does everything. | `\.\AVD-Deploy-Alert-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-alert-details" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmails "team@contoso.com"` |
-| 3 | `AVD-Category-Alerts.ps1` | Create alert rules only | Creates and maintains `AVD-Category-*` scheduled query alerts and the webhook action group. Called automatically by script #2 — run directly only for standalone alert creation without the Logic App. | `\.\AVD-Category-Alerts.ps1 -DetailedResultsWebhookUrl "https://your-logicapp-callback-url"` |
+| 3 | `AVD-AzAlerts-Category-Alerts.ps1` | Create alert rules only | Creates and maintains `AVD-Category-*` scheduled query alerts and the webhook action group. Called automatically by script #2 — run directly only for standalone alert creation without the Logic App. | `\.\AVD-AzAlerts-Category-Alerts.ps1 -DetailedResultsWebhookUrl "https://your-logicapp-callback-url"` |
 | 4 | `AVD-Webhook-TestAlert.ps1` | Test webhook delivery | Posts a synthetic Azure Monitor alert payload to a Logic App callback URL to verify end-to-end email delivery. | `\.\AVD-Webhook-TestAlert.ps1 -ResourceGroup "YOUR-RG" -LogicAppName "AVD-alert-details"` |
 
 ## Dependency Diagram
@@ -48,7 +48,7 @@ flowchart TD
   D[AVD-Deploy-Alert-LogicApp.ps1] --> LA[Logic App AVD-alert-details]
   D --> O365[Office365 API Connection]
   D --> AG[AVD-Alerts-Detailed Action Group]
-  D -.bootstrap if missing.-> R[AVD-Category-Alerts.ps1]
+  D -.bootstrap if missing.-> R[AVD-AzAlerts-Category-Alerts.ps1]
   D --> SQ
 
   R --> SQ[AVD-Category-* Scheduled Query Rules]
@@ -71,7 +71,7 @@ Use this single matrix to understand required access, what each script changes, 
 | --- | --- | --- | --- | --- |
 | `AVD-RBAC-Precheck.ps1` | Read access to role assignments and role definitions in relevant scopes | None (read-only validation) | None | Azure control plane reads only; no local output by default |
 | `AVD-Deploy-Alert-LogicApp.ps1` | `Contributor` on target resource group plus role-assignment write at LAW scope (`User Access Administrator`, `Owner`, or equivalent `Microsoft.Authorization/roleAssignments/write`) | Creates/updates Logic App (`AVD-alert-details`), Office365 API connection, detailed action group receiver, and bootstraps/retargets `AVD-Category-*` alerts | Creates/enables Logic App system-assigned managed identity and assigns `Log Analytics Reader` at workspace scope | Azure control plane + Logic App runtime calls to Log Analytics and Office365; writes temporary deployment JSON (cleaned up) |
-| `AVD-Category-Alerts.ps1` | `Monitoring Contributor` on target resource group plus workspace read access | Creates/updates `AVD-Category-*` scheduled query rules and ensures/uses `AVD-Alerts-Detailed` action group | None | Azure control plane via `az`; writes CSV report (`avd-alerts-report*.csv`) |
+| `AVD-AzAlerts-Category-Alerts.ps1` | `Monitoring Contributor` on target resource group plus workspace read access | Creates/updates `AVD-Category-*` scheduled query rules and ensures/uses `AVD-Alerts-Detailed` action group | None | Azure control plane via `az`; writes CSV report (`avd-alerts-report*.csv`) |
 | `AVD-Webhook-TestAlert.ps1` | `Logic App Contributor` (or `Contributor`) on target resource group | No persistent resource changes (test payload only) | None | Posts synthetic payload to Logic App callback URL; no persistent local output |
 
 ## Sample Usage

@@ -4,7 +4,7 @@
 > See `AVD-Alerts-Matrix.md` and `AVD-Alerts-Runbook.md` for full documentation.
 
 > **Scope**: Alerts that rely on AVD-native diagnostic log tables routed via host pool diagnostic settings.
-> These are _separate_ from the session-host Perf/Event/InsightsMetrics alerts in `private-dev/AVD-SessionHostMonitoring/`.
+> These are _separate_ from the session-host Perf/Event/InsightsMetrics alerts in `private-dev/AVD-SessionHost-Insights/`.
 > **Prerequisite**: Host pool diagnostic settings must route `allLogs` (or the specific tables below) to the target Log Analytics workspace.
 
 ---
@@ -115,3 +115,4 @@ WVDConnectionNetworkData
 - The deployment script should be added to `AVD/AVD-AzAlerts/` (alongside `AVD-Category-Alerts.ps1`) since these are host-pool-scoped alerts, not session-host-scoped.
 - Reuse the existing `New-OrSkip-ScheduledQueryAlert` pattern from `AVD-Category-Alerts.ps1`.
 - These alerts can share the same Logic App / webhook action group already deployed by `AVD-Deploy-Alert-LogicApp.ps1`.
+

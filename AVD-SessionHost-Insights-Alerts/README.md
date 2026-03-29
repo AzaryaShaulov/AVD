@@ -1,214 +1,213 @@
-# AVD Insights Alerts
-
-**Rich performance and session lifecycle alerting** for Azure Virtual Desktop — delivering detailed, operator-friendly HTML emails that go beyond standard Azure Monitor notifications.
-
-Standard Azure Monitor alert emails show only the alert name and a portal link. These alerts use a **Logic App webhook pipeline** that re-queries Log Analytics when an alert fires, producing emails with specific counter values, affected session host names, threshold breaches, and inline troubleshooting context — so operators can assess and act without opening the Azure Portal.
-
-Driven by AVD Insights data: Perf counters (28 metrics via DCR), WVDCheckpoints, and WVDAgentHealthStatus.
+﻿# AVD Insights Alerts
 
 ## Overview
 
-This solution **complements** the existing [AVD-AzAlerts](../../AVD-AzAlerts/) WVDErrors-category alerts by monitoring the session host **performance counters** and **session lifecycle signals** that AVD Insights collects via Azure Monitor Agent and Data Collection Rules.
+This solution provides rich performance and session lifecycle alerting for Azure Virtual Desktop with a Logic App webhook email pipeline.
 
-### What It Monitors
+Standard Azure Monitor alert emails typically include minimal context. This implementation re-queries Log Analytics when alerts fire and sends operator-friendly notifications with affected host names, threshold breaches, and troubleshooting details.
 
-| Category | Alert Rule | Signals | Data Source |
-|----------|-----------|---------|-------------|
-| Session Quality | AVD-Insights-Category-SessionQuality | InputDelay (Process/Session), RTT Latency, UDP Bandwidth | Perf (User Input Delay, RemoteFX Network) |
-| Host Performance | AVD-Insights-Category-HostPerformance | CPU, Memory, Commit Ratio, Pages/sec, Page Faults, Disk Timing | Perf (Processor, Memory, LogicalDisk) |
-| Disk Health | AVD-Insights-Category-DiskHealth | Queue Length, Free Space | Perf (PhysicalDisk, LogicalDisk) |
-| Session Lifecycle | AVD-Insights-Category-SessionLifecycle | Sign-In Duration, Capacity Pressure, Session Imbalance | WVDCheckpoints, WVDAgentHealthStatus, Perf (Terminal Services) |
-| Correlated Signals | AVD-Insights-Category-CorrelatedSignals | Multi-signal Hosts, FSLogix+Perf | Perf + WVDCheckpoints + Event |
-| Event Log Alerts | AVD-Insights-Category-EventLogAlerts | FSLogix Profile Error | Event (FSLogix operational/admin logs) |
-| GPU Performance | AVD-Insights-Category-GPUPerformance | GPU Encoding Time | Perf (RemoteFX Graphics) |
+Signals are sourced from AVD Insights data, including Perf counters, `WVDCheckpoints`, and `WVDAgentHealthStatus`.
 
-**7 category-consolidated alerts** (covering 19 sub-signals) across 7 categories. Each category alert unions all its sub-signals into a single scheduled-query rule — the alert fires when ANY signal in the category breaches its threshold. All thresholds are config-driven via `alerts-config.insights.json`.
+## Purpose
 
-## Script Reference
+This solution complements the existing [AVD-AzAlerts](../AVD-AzAlerts/) WVDErrors-category alerts by adding deep session host performance and session lifecycle coverage.
 
-| # | Script | Purpose | What It Does | Quick Start (copy & paste) |
-| -- | ------ | ------- | ------------ | -------------------------- |
-| 1 | `AVD-Insights-Alerts-Precheck.ps1` | Validate prerequisites | Checks RBAC permissions, Azure CLI extensions, LAW connectivity, and verifies Perf counter data flow. Read-only — no changes made. | `.\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"` |
-| 2 | `AVD-Insights-Deploy-LogicApp.ps1` | **Primary: deploy alerts + email pipeline** | Creates/updates the Logic App, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 7 `AVD-Insights-Category-*` alerts. Single command does everything. | `.\AVD-Insights-Deploy-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-Insights-Alert-Email" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmail "team@contoso.com"` |
-| 3 | `AVD-Insights-Category-Alerts.ps1` | Create alert rules only | Reads definitions from `alerts-config.insights.json`, loads KQL query files, and creates Azure Monitor scheduled query rules. Called automatically by script #2 — run directly only for standalone alert creation or re-deploy after threshold changes. | `.\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2"` |
+**Key goals:**
 
-**Additional modes:**
+- Provide category-based alerting across AVD session quality, host performance, disk health, lifecycle, correlation, event logs, and GPU performance.
+- Deliver actionable email context through Logic App enrichment instead of basic alert notifications.
+- Keep deployment repeatable through script-driven precheck and idempotent deployment steps.
+- Support threshold tuning with KQL-backed category query files.
 
-| Mode | Command |
-| ---- | ------- |
-| WhatIf (dry run) | `.\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2" -WhatIf` |
-| Single category | `.\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2" -CategoryFilter "HostPerformance"` |
-| Override severity | `.\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2" -Severity 1` |
+**Why this is a best practice:**
+
+| Best Practice | Benefits |
+| --- | --- |
+| **Proactive Monitoring and Alerting** | Detect performance degradation and session issues before user-impact escalates. |
+| **Troubleshooting and Root Cause Analysis** | Correlate Perf, checkpoint, and agent health signals in one workflow. |
+| **Operational Consistency** | Use the same deployment pattern across environments with precheck and scripted rollout. |
+| **Performance Optimization** | Track capacity pressure, latency, and host bottlenecks for tuning decisions. |
+| **Cost Management** | Focus alerting on meaningful categories and thresholds to reduce noisy operations overhead. |
+| **Microsoft Support Readiness** | Retain alert and telemetry evidence for faster incident triage. |
 
 ## Prerequisites
 
-1. **Azure Monitor Agent (AMA)** deployed on session hosts
-2. **Data Collection Rule** sending Perf counters to your Log Analytics workspace  
-   (See [AVD-Insights-Enable-PerfMetrics-Monitoring.ps1](../AVD-Insights-Enable-PerfMetrics-Monitoring.ps1))
-3. **AVD Diagnostics** enabled (WVDCheckpoints, WVDAgentHealthStatus tables)
-4. **Azure CLI** with `scheduled-query` extension
-5. RBAC: **Monitoring Contributor** + **Log Analytics Reader** (or Owner/Contributor)
+- Azure CLI installed ([Install guide](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli))
+- Azure account with **Monitoring Contributor** and **Log Analytics Reader** (or Owner/Contributor)
+- PowerShell 5.1 or later
+- Active Azure subscription with AVD session hosts
+- Azure Monitor Agent (AMA) deployed on session hosts
+- Data Collection Rule sending required Perf counters to the target Log Analytics workspace
+- AVD diagnostics enabled for lifecycle/agent tables (`WVDCheckpoints`, `WVDAgentHealthStatus`)
 
-## File Structure
+### Best Practice Checklist
 
-```
-AVD-Insights-Alerts/
-├── alerts-config.insights.json          # Alert definitions and thresholds (7 categories)
-├── queries/                             # KQL query files
-│   ├── category-session-quality.kql     # Consolidated: InputDelay + RTT + UDP
-│   ├── category-host-performance.kql    # Consolidated: CPU + Memory + Disk Timing
-│   ├── category-disk-health.kql         # Consolidated: Queue Length + Free Space
-│   ├── category-session-lifecycle.kql   # Consolidated: SignIn + Capacity + Imbalance
-│   ├── category-correlated-signals.kql  # Consolidated: Multi-signal + FSLogix
-│   ├── category-event-log-alerts.kql    # FSLogix profile errors
-│   ├── category-gpu-performance.kql     # GPU encoding time
-│   ├── input-delay.kql                  # Individual signal (used by LogicApp re-queries)
-│   ├── round-trip-latency.kql
-│   ├── input-delay-session.kql
-│   ├── udp-bandwidth.kql
-│   ├── cpu-saturation.kql
-│   ├── memory-pressure.kql
-│   ├── memory-commit-ratio.kql
-│   ├── memory-pages-per-sec.kql
-│   ├── page-faults.kql
-│   ├── disk-timing.kql
-│   ├── disk-queue-length.kql
-│   ├── disk-free-space.kql
-│   ├── signin-degradation.kql
-│   ├── capacity-pressure.kql
-│   ├── session-imbalance.kql
-│   ├── correlated-hosts.kql
-│   ├── fslogix-correlation.kql
-│   ├── fslogix-profile-error.kql
-│   └── gpu-encoding-time.kql
-├── AVD-Insights-Deploy-LogicApp.ps1     # **Primary**: deploys Logic App + bootstraps alerts
-├── AVD-Insights-Category-Alerts.ps1       # Advanced: deploy/update alerts only
-├── AVD-Insights-Alerts-Precheck.ps1     # RBAC & data flow validation
-├── README.md                            # This file
-├── Insights-Alert-Matrix.md             # Alert reference matrix
-└── Insights-Runbook.md                  # Operational runbook
-```
+Before running this solution, ensure:
 
-## Deployment
+- [ ] AMA is healthy on all session hosts
+- [ ] DCR is collecting required Perf counters into the target workspace
+- [ ] AVD diagnostics tables (`WVDCheckpoints`, `WVDAgentHealthStatus`) are populated
+- [ ] You have required RBAC on resource group, workspace, and alert resources
+- [ ] Office 365 connection authorization ownership is assigned for post-deploy validation
+- [ ] Threshold expectations are reviewed in `alerts-config.insights.json` and `queries/category-*.kql`
 
-### Recommended: Single-Command Deploy (Logic App + Alerts)
+## Runbook and Alert Matrix
 
-The **primary entry point** is `AVD-Insights-Deploy-LogicApp.ps1`. It deploys the Logic App email pipeline and automatically **bootstraps any missing AVD-Insights alerts** via `AVD-Insights-Category-Alerts.ps1`. If all 7 category alerts already exist, the bootstrap step is skipped.
+Use the runbook for operational response steps, validation checks, and day-2 maintenance guidance after deployment. Use the alert matrix to quickly understand each alert category, the monitored signals, and intended operator actions.
 
-#### Step 1 (Optional): Run Pre-Checks
+- [Insights Runbook](AVD-Insights-Alerts-Runbook.md)
+- [Insights Alert Matrix](AVD-Insights-Alert-Matrix.md)
+
+## Run Order
+
+1. Authenticate with Azure (`az login`) and confirm the target subscription.
+2. Run precheck to validate permissions, extension readiness, and data flow.
+3. Run Logic App deployment to create/update the webhook email pipeline and bootstrap missing category alerts.
+4. Validate deployment outputs and confirm alerts are connected to the detailed action group.
+
+### Quick Start
+
+1. Login to Azure:
+
+  ```powershell
+  az login
+  ```
+
+1. Run precheck:
+
+  ```powershell
+  .\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"
+  ```
+
+### Starter Example 1: Deploy Full Solution
+
+1. Deploy the detailed email pipeline and bootstrap category alerts:
 
 ```powershell
-.\AVD-Insights-Alerts-Precheck.ps1 `
-  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -ResourceGroupName "rg-avd-prod" `
-  -WorkspaceName "law-avd-prod"
-```
-
-This validates RBAC, Azure CLI extensions, LAW connectivity, and verifies Perf counter data flow.
-
-#### Step 2: Deploy Everything
-
-```powershell
-.\AVD-Insights-Deploy-LogicApp.ps1 `
-  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -ResourceGroupName "rg-avd-prod" `
+.\AVD-Insights-Alerts-Deploy-LogicApp.ps1 `
+  -SubscriptionId "YOUR-SUB-ID" `
+  -ResourceGroupName "YOUR-RG" `
   -LogicAppName "AVD-Insights-Alert-Email" `
   -Location "eastus2" `
-  -WorkspaceName "law-avd-prod" `
-  -WorkspaceResourceGroupName "rg-avd-prod" `
-  -SendToEmail "avdops@contoso.com" `
-  -SendFromEmail "alerts@contoso.com"
+  -WorkspaceName "YOUR-LAW" `
+  -WorkspaceResourceGroupName "YOUR-LAW-RG" `
+  -SendFromEmail "alerts@contoso.com" `
+  -SendToEmail "team@contoso.com"
 ```
 
-This single command will:
-1. Create/update the Office 365 API connection
-2. Resolve the Log Analytics workspace
-3. Deploy the Logic App with system-assigned managed identity
-4. Assign **Log Analytics Reader** RBAC to the Logic App identity
-5. Create the **AVD-Insights-Detailed** webhook action group pointing to the Logic App callback URL
-6. **Bootstrap** any missing AVD-Insights category alerts (calls `AVD-Insights-Category-Alerts.ps1` internally)
-7. Switch all AVD-Insights alerts to the detailed-only action group
+### Starter Example 2: Deploy Alerts Only (No Logic App)
 
-> **Note:** The Office 365 API connection may require manual authorization in Azure Portal before emails flow.
-
-### Advanced: Deploy Alerts Only
-
-Use `AVD-Insights-Category-Alerts.ps1` directly when you need to:
-- Deploy alerts **without** the Logic App email pipeline
-- Re-deploy or update specific alerts (e.g., after editing KQL thresholds)
-- Use a different action group or webhook target
+Create or update category rules directly:
 
 ```powershell
-.\AVD-Insights-Category-Alerts.ps1 `
-  -ResourceGroup "rg-avd-prod" `
-  -WorkspaceName "law-avd-prod" `
+.\AVD-Insights-Alerts-Category-Alerts.ps1 `
+  -ResourceGroup "YOUR-RG" `
+  -WorkspaceName "YOUR-LAW" `
   -Location "eastus2" `
-  -WebhookUrl "https://your-webhook-url"
+  -CategoryFilter "HostPerformance"
 ```
 
-## Common Operations
+## Post-Run Validation
 
-### Preview Changes (Dry Run)
+After deployment, validate that the Logic App, action group, and all category alerts are present and connected.
+
+Recommended validation command:
 
 ```powershell
-.\AVD-Insights-Category-Alerts.ps1 -ResourceGroup "rg-avd" -WorkspaceName "law-avd" -Location "eastus2" -WhatIf
+.\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"
 ```
 
-### Deploy a Single Category
+## Script Reference, Access Impact, and Parameters
 
-```powershell
-.\AVD-Insights-Category-Alerts.ps1 ... -CategoryFilter "HostPerformance"
-```
+| Script | Purpose | What It Does | Starter Command | Additional Modes | Minimum Access | Azure Resources Changed | Identity Impact | Runtime Calls and Local Output |
+| ------ | ------- | ------------ | --------------- | ---------------- | -------------- | ----------------------- | --------------- | ------------------------------ |
+| `AVD-Insights-Alerts-Precheck.ps1` | Validate prerequisites | Checks RBAC permissions, Azure CLI extension readiness, workspace connectivity, and Perf data availability. Read-only. | `.\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"` | Re-run after deployment for verification. | Read permissions on target resource group and Log Analytics workspace | None | None | Azure read operations and console validation output |
+| `AVD-Insights-Alerts-Deploy-LogicApp.ps1` | Primary deploy for pipeline and bootstrap | Creates/updates Logic App, API connection, webhook action group, and RBAC assignment for managed identity. Bootstraps missing category alerts. | `.\AVD-Insights-Alerts-Deploy-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-Insights-Alert-Email" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmail "team@contoso.com"` | Re-run safely for updates in place. | `Monitoring Contributor` and `Log Analytics Reader` at required scopes | Logic App, API connection, action group, RBAC assignment, and alert links | Uses system-assigned managed identity for query execution | Azure control-plane calls, deployment status messages |
+| `AVD-Insights-Alerts-Category-Alerts.ps1` | Deploy category alert rules only | Loads `alerts-config.insights.json` and `queries/category-*.kql`, then creates or updates category scheduled query rules. | `.\AVD-Insights-Alerts-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2"` | WhatIf: `-WhatIf`; single category: `-CategoryFilter "HostPerformance"`; severity override: `-Severity 1` | `Monitoring Contributor` on target resource group/workspace | Scheduled query alert rules and action group bindings | None | Azure control-plane calls and rule deployment output |
 
-### Deploy a Single Alert
+### Parameters
 
-```powershell
-.\AVD-Insights-Category-Alerts.ps1 ... -AlertFilter "AVD-Insights-Category-HostPerformance"
-```
+| Script | Required Parameters | Optional Parameters |
+| ------ | ------------------- | ------------------- |
+| `AVD-Insights-Alerts-Precheck.ps1` | `-SubscriptionId`, `-ResourceGroupName`, `-WorkspaceName` | `-WorkspaceResourceGroupName` (if supported in your version) |
+| `AVD-Insights-Alerts-Deploy-LogicApp.ps1` | `-SubscriptionId`, `-ResourceGroupName`, `-LogicAppName`, `-Location`, `-WorkspaceName`, `-WorkspaceResourceGroupName`, `-SendFromEmail`, `-SendToEmail` | Environment-specific naming overrides where available |
+| `AVD-Insights-Alerts-Category-Alerts.ps1` | `-ResourceGroup`, `-WorkspaceName`, `-Location` | `-WhatIf`, `-CategoryFilter`, `-AlertFilter`, `-Severity`, `-WebhookUrl`, `-CreateOnly` |
 
-### Override Severity
+## What Are AVD Session Host Insights Alerts?
 
-```powershell
-.\AVD-Insights-Category-Alerts.ps1 ... -Severity 1   # Error
-```
+These are category-consolidated scheduled query alerts built on AVD Insights telemetry and related AVD operational tables.
 
-### Tune Thresholds
+### Alert Categories
 
-Thresholds are defined as `let` variables at the top of each `queries/category-*.kql` file. Edit the KQL files directly to change thresholds, then re-deploy with `-CreateOnly $false`. The `alerts-config.insights.json` file documents the threshold values for reference but is not injected into the KQL at deploy time.
+| Category | Alert Rule | Signals | Data Source |
+| -------- | ---------- | ------- | ----------- |
+| Session Quality | `AVD-Insights-Category-SessionQuality` | InputDelay (Process/Session), RTT latency, UDP bandwidth | Perf (User Input Delay, RemoteFX Network) |
+| Host Performance | `AVD-Insights-Category-HostPerformance` | CPU, memory, commit ratio, pages/sec, page faults, disk timing | Perf (Processor, Memory, LogicalDisk) |
+| Disk Health | `AVD-Insights-Category-DiskHealth` | Queue length, free space | Perf (PhysicalDisk, LogicalDisk) |
+| Session Lifecycle | `AVD-Insights-Category-SessionLifecycle` | Sign-in duration, capacity pressure, session imbalance | `WVDCheckpoints`, `WVDAgentHealthStatus`, Perf |
+| Correlated Signals | `AVD-Insights-Category-CorrelatedSignals` | Multi-signal hosts, FSLogix plus Perf correlation | Perf plus `WVDCheckpoints` plus Event |
+| Event Log Alerts | `AVD-Insights-Category-EventLogAlerts` | FSLogix profile error | Event (FSLogix operational/admin logs) |
+| GPU Performance | `AVD-Insights-Category-GPUPerformance` | GPU encoding time | Perf (RemoteFX Graphics) |
 
-## Dependency Diagram
+## Status Indicators
 
-```mermaid
-flowchart TD
-    subgraph Prerequisites
-        AMA["Azure Monitor Agent<br>on Session Hosts"]
-        DCR["Data Collection Rule<br>(Perf + InsightsMetrics)"]
-        DIAG["AVD Diagnostics<br>(WVDCheckpoints, AgentHealth)"]
-    end
+| Status | Meaning |
+| ------ | ------- |
+| Precheck Passed | Required dependencies, permissions, and data flow checks succeeded |
+| Precheck Warning | One or more non-blocking gaps were detected and should be reviewed |
+| Deployment Succeeded | Logic App pipeline and alert resources were created or updated successfully |
+| Bootstrap Skipped | Category alerts already existed and did not require creation |
+| Alert Rule Enabled | Scheduled query rule is active and bound to action group |
 
-    subgraph "Primary Deployment (recommended)"
-        PRE["AVD-Insights-Alerts-Precheck.ps1<br>RBAC + data flow check"]
-        LA["AVD-Insights-Deploy-LogicApp.ps1<br>Logic App + bootstrap alerts"]
-    end
+## Troubleshooting
 
-    subgraph "Bootstrapped Automatically"
-        CFG["alerts-config.insights.json<br>thresholds & metadata"]
-        KQL["queries/category-*.kql<br>7 consolidated KQL files"]
-        DEPLOY["AVD-Insights-Category-Alerts.ps1<br>creates scheduled query rules"]
-    end
+| Error / Issue | Resolution |
+| ------------- | ---------- |
+| Office 365 connection not sending emails | Re-authorize the API connection in Azure Portal and verify sender mailbox permissions |
+| Alerts created but no detailed email content | Confirm Logic App callback URL/action group binding and Log Analytics Reader role assignment |
+| Precheck reports missing Perf data | Validate AMA health and DCR scope, then wait for fresh ingestion |
+| Permission or RBAC failures | Confirm `Monitoring Contributor` and `Log Analytics Reader` at required scopes |
+| Category deploy not updating thresholds | Verify edits in `queries/category-*.kql` and redeploy with update mode |
 
-    AMA --> DCR
-    DCR --> |Perf data| LA
-    DIAG --> |WVD tables| LA
-    PRE --> |validates| LA
-    LA --> |bootstraps missing alerts| DEPLOY
-    CFG --> |thresholds| DEPLOY
-    KQL --> |queries| DEPLOY
-```
+## Additional Resources
 
-## Related
+| Category | Resource | Description |
+| -------- | -------- | ----------- |
+| This Repo | [AVD Diagnostics](../AVD-Diagnostics/) | Enable and validate AVD diagnostics required for lifecycle signals |
+| This Repo | [AVD Az Alerts](../AVD-AzAlerts/) | WVDErrors-category alerts for connection/authentication failures |
+| This Repo | [AVD Session Host Insights](../AVD-SessionHost-Insights/) | AMA and DCR setup for Perf metrics collection |
+| This Repo | [Perf Metrics Script](../AVD-SessionHost-Insights/AVD-Insights-Enable-PerfMetricsDCRps1) | Deploys session host Perf metric collection prerequisites |
+| This Repo | [Insights Alert Matrix](AVD-Insights-Alert-Matrix.md) | Alert category and signal reference |
+| This Repo | [Insights Runbook](AVD-Insights-Alerts-Runbook.md) | Operational response and maintenance guidance |
+| Microsoft Docs | [AVD Insights](https://learn.microsoft.com/en-us/azure/virtual-desktop/insights) | Official AVD Insights documentation |
+| Microsoft Docs | [Azure Monitor Scheduled Query Alerts](https://learn.microsoft.com/en-us/azure/azure-monitor/alerts/alerts-types#log-search-alerts) | Alert rule behavior and configuration details |
 
-- [AVD-AzAlerts](../../AVD-AzAlerts/) - WVDErrors category alerts (connection failures, auth errors)
-- [AVD-Insights-Enable-PerfMetrics-Monitoring.ps1](../AVD-Insights-Enable-PerfMetrics-Monitoring.ps1) - DCR and AMA setup
-- [Insights-Alert-Matrix.md](Insights-Alert-Matrix.md) - Full alert reference
-- [Insights-Runbook.md](Insights-Runbook.md) - Operational procedures
+## Version
+
+**Version:** 1.0  
+**Last Updated:** March 2026
+
+## License
+
+See [LICENSE](../LICENSE) file for details.
+
+## Disclaimer
+
+**THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.**
+
+This solution is provided as-is under the MIT License. The authors and contributors:
+
+- Make no warranties or guarantees about functionality, reliability, or suitability for any purpose
+- Accept no responsibility or liability for damages, data loss, service interruptions, or other impacts from use
+- Provide no support or maintenance obligations, though community contributions are welcome
+- Recommend thorough testing in non-production environments before production rollout
+
+### Important Notes
+
+- Test first in a development or staging environment before production rollout
+- Validate Logic App and Office 365 connection authorization after deployment
+- Confirm required RBAC assignments before execution
+- Review Azure Monitor and Log Analytics ingestion costs before broad enablement
+- Ensure organizational security and compliance requirements are met
+
+By using this solution, you acknowledge and accept these terms and assume all associated risks.

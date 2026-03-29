@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     Validates prerequisites for AVD Insights alert deployment.
@@ -6,7 +6,7 @@
 .DESCRIPTION
     Checks RBAC permissions, Azure CLI extensions, Log Analytics workspace
     connectivity, and verifies that expected Perf counter data is flowing
-    to the workspace before running AVD-Insights-Category-Alerts.ps1.
+    to the workspace before running AVD-Insights-Alerts-Category-Alerts.ps1.
 
     This is a safe, read-only script that makes no changes.
 
@@ -385,7 +385,7 @@ Write-Log "PASS: $passCount  |  WARN: $warnCount  |  FAIL: $failCount" $(if ($fa
 
 if ($failCount -gt 0) {
     Write-Log ""
-    Write-Log "One or more checks failed. Resolve the issues above before running AVD-Insights-Category-Alerts.ps1" "Red"
+    Write-Log "One or more checks failed. Resolve the issues above before running AVD-Insights-Alerts-Category-Alerts.ps1" "Red"
     exit 1
 } elseif ($warnCount -gt 0) {
     Write-Log ""
@@ -396,3 +396,4 @@ if ($failCount -gt 0) {
     Write-Log "All checks passed. Ready to deploy." "Green"
     exit 0
 }
+

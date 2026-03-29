@@ -1,4 +1,4 @@
-# AVD Diagnostics Configuration Tool
+﻿# AVD Diagnostics Configuration Tool
 
 ## Overview
 
@@ -133,12 +133,12 @@ Point diagnostics to a specific Log Analytics workspace and write CSV output to 
 
 | Parameter | Required | Type | Default | Description |
 | --------- | -------- | ---- | ------- | ----------- |
-| `-SubscriptionId` | **Yes** | `string` | — | Azure subscription ID (GUID format) |
+| `-SubscriptionId` | **Yes** | `string` | - | Azure subscription ID (GUID format) |
 | `-WorkspaceName` | No | `string` | `AVD-LAW` | Log Analytics workspace name |
 | `-WorkspaceResourceGroupName` | No | `string` | `rg-avd-monitoring` | Resource group containing the workspace. Alias: `-WorkspaceResourceGroup` |
 | `-DiagnosticSettingName` | No | `string` | `AVD-Diagnostics` | Name for diagnostic settings created on each resource |
 | `-CsvPath` | No | `string` | `avd-diagnostics-minimal.csv` (script directory) | Output path for CSV status report |
-| `-CheckOnly` | No | `switch` | Off | Read-only mode — displays current diagnostic settings status without making any changes |
+| `-CheckOnly` | No | `switch` | Off | Read-only mode - displays current diagnostic settings status without making any changes |
 
 ## What Are AVD Diagnostic Logs?
 
@@ -177,7 +177,7 @@ Azure Virtual Desktop diagnostic logs capture telemetry about operations, perfor
 | ------------- | ---------- |
 | `Failed to set subscription` | Run `az login` to authenticate before executing the script |
 | `Log Analytics Workspace not found` | Verify `-WorkspaceName` and `-WorkspaceResourceGroupName` parameter values |
-| `Conflict detected` | A duplicate diagnostic setting exists for the same workspace — remove it or use a different `-DiagnosticSettingName` |
+| `Conflict detected` | A duplicate diagnostic setting exists for the same workspace - remove it or use a different `-DiagnosticSettingName` |
 | Permission errors | Ensure your account has **Monitoring Contributor** on the AVD resources and the Log Analytics workspace |
 
 ## Additional Resources
@@ -188,7 +188,7 @@ Azure Virtual Desktop diagnostic logs capture telemetry about operations, perfor
 | Microsoft Docs | [Azure Monitor Diagnostic Settings](https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/diagnostic-settings) | Diagnostic settings reference |
 | Microsoft Docs | [AVD Required URLs](https://learn.microsoft.com/en-us/azure/virtual-desktop/safe-url-list) | Firewall & network requirements |
 | This Repo | [AVD Alerts Script](../AVD-AzAlerts/) | Automated alerting for AVD error conditions |
-| This Repo | [AVD Session Host Monitoring](../AVD-SessionHostMonitoring/) | DCR-based performance counter collection |
+| This Repo | [AVD Session Host Insights](../AVD-SessionHost-Insights/) | DCR-based performance counter collection |
 | Azure | [AVD Insights Workbook](https://learn.microsoft.com/en-us/azure/virtual-desktop/insights) | Built-in Azure Monitor workbook for AVD |
 | Community | [AVD Tech Community](https://techcommunity.microsoft.com/t5/azure-virtual-desktop/bd-p/AzureVirtualDesktopForum) | Microsoft Tech Community forum |
 | Community | [AVD GitHub Samples](https://github.com/Azure/RDS-Templates/tree/master/wvd-templates) | Official ARM/Bicep deployment templates |
@@ -215,10 +215,10 @@ This script is provided as-is under the MIT License. The authors and contributor
 
 ### Important Notes
 
-- ⚠️ **Test First**: Always test in a development/staging environment before running in production
-- ⚠️ **Backup**: Ensure you have appropriate backups and rollback procedures
-- ⚠️ **Permissions**: Review required Azure RBAC permissions before execution
-- ⚠️ **Costs**: Understand Azure Monitor and Log Analytics pricing before enabling diagnostics at scale
-- ⚠️ **Compliance**: Verify this solution meets your organization's security and compliance requirements
+- **Test First**: Always test in a development/staging environment before running in production
+- **Backup**: Ensure you have appropriate backups and rollback procedures
+- **Permissions**: Review required Azure RBAC permissions before execution
+- **Costs**: Understand Azure Monitor and Log Analytics pricing before enabling diagnostics at scale
+- **Compliance**: Verify this solution meets your organization's security and compliance requirements
 
 **By using this script, you acknowledge and accept these terms and assume all risks associated with its use.**

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1283" viewBox="0 0 1680 980" role="img" aria-labelledby="title desc">
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1283" viewBox="0 0 1680 980" role="img" aria-labelledby="title desc">
   <title id="title">AVD Monitoring Decision Guide</title>
   <desc id="desc">Choose the AVD deployment path based on required monitoring outcomes.</desc>
   <defs>
@@ -80,15 +80,15 @@
   <rect class="box" x="610" y="449" width="460" height="80" />
   <text class="txt" x="625" y="476">2. Deploy DCR and policy association:</text>
   <text class="small" x="625" y="498">
-    <tspan x="625" dy="0">AVD-SessionHostMonitoring/</tspan>
-    <tspan x="625" dy="14">AVD-Insights-Enable-PerfMetrics-Monitoring.ps1</tspan>
+    <tspan x="625" dy="0">AVD-SessionHost-Insights/</tspan>
+    <tspan x="625" dy="14">AVD-Insights-Enable-PerfMetricsDCRps1</tspan>
   </text>
 
   <rect class="box" x="610" y="543" width="460" height="80" />
   <text class="txt" x="625" y="570">3. Deploy Insights alert pipeline:</text>
   <text class="small" x="625" y="592">
     <tspan x="625" dy="0">AVD-SessionHost-Insights-Alerts/</tspan>
-    <tspan x="625" dy="14">AVD-Insights-Deploy-LogicApp.ps1</tspan>
+    <tspan x="625" dy="14">AVD-Insights-Alerts-Deploy-LogicApp.ps1</tspan>
   </text>
 
   <rect class="box" x="610" y="637" width="460" height="80" />
@@ -121,15 +121,15 @@
   <rect class="box" x="1150" y="543" width="460" height="80" />
   <text class="txt" x="1165" y="570">3. Deploy DCR and policy association:</text>
   <text class="small" x="1165" y="592">
-    <tspan x="1165" dy="0">AVD-SessionHostMonitoring/</tspan>
-    <tspan x="1165" dy="14">AVD-Insights-Enable-PerfMetrics-Monitoring.ps1</tspan>
+    <tspan x="1165" dy="0">AVD-SessionHost-Insights/</tspan>
+    <tspan x="1165" dy="14">AVD-Insights-Enable-PerfMetricsDCRps1</tspan>
   </text>
 
   <rect class="box" x="1150" y="637" width="460" height="80" />
   <text class="txt" x="1165" y="664">4. Deploy Insights alert pipeline:</text>
   <text class="small" x="1165" y="686">
     <tspan x="1165" dy="0">AVD-SessionHost-Insights-Alerts/</tspan>
-    <tspan x="1165" dy="14">AVD-Insights-Deploy-LogicApp.ps1</tspan>
+    <tspan x="1165" dy="14">AVD-Insights-Alerts-Deploy-LogicApp.ps1</tspan>
   </text>
 
   <rect class="box" x="1150" y="731" width="460" height="80" />
@@ -145,3 +145,4 @@
   <path class="connector" d="M1380 717 L1380 731" />
   <path class="connector" d="M1380 811 L1380 825" />
 </svg>
+
