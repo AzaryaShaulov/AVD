@@ -16,5 +16,6 @@ AVD-SessionHost-Insights/AVD-Insights-Deploy-AMA-Agent.ps1
 AVD-Discord/.env
 **/.env
 **/.env.*
+AVD-Discord
 
 

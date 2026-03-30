@@ -777,9 +777,9 @@ $alertEmailHtmlExpr = @'
     '<tr><td><b>Description</b></td><td>', coalesce(variables('AlertDescriptionText'), 'N/A'), '</td></tr>',
     '<tr><td><b>Severity</b></td><td>', string(coalesce(triggerBody()?['data']?['essentials']?['severity'], 'N/A')), '</td></tr>',
     '<tr><td><b>Condition</b></td><td>', coalesce(triggerBody()?['data']?['essentials']?['monitorCondition'], 'N/A'), '</td></tr>',
-    '<tr><td><b>Fired At</b></td><td>', coalesce(triggerBody()?['data']?['essentials']?['firedDateTime'], 'N/A'), '</td></tr>',
-    '<tr><td><b>Window Start</b></td><td>', coalesce(triggerBody()?['data']?['alertContext']?['condition']?['windowStartTime'], triggerBody()?['data']?['alertContext']?['windowStartTime'], 'N/A'), '</td></tr>',
-    '<tr><td><b>Window End</b></td><td>', coalesce(triggerBody()?['data']?['alertContext']?['condition']?['windowEndTime'], triggerBody()?['data']?['alertContext']?['windowEndTime'], 'N/A'), '</td></tr>',
+    '<tr><td><b>Fired At</b></td><td>', if(equals(coalesce(triggerBody()?['data']?['essentials']?['firedDateTime'], ''), ''), 'N/A', concat(convertTimeZone(triggerBody()?['data']?['essentials']?['firedDateTime'], 'UTC', '$CustomerTimeZone', 'yyyy-MM-dd HH:mm:ss'), ' ($CustomerTzAbbrev)')), '</td></tr>',
+    '<tr><td><b>Window Start</b></td><td>', if(equals(coalesce(triggerBody()?['data']?['alertContext']?['condition']?['windowStartTime'], triggerBody()?['data']?['alertContext']?['windowStartTime'], ''), ''), 'N/A', concat(convertTimeZone(coalesce(triggerBody()?['data']?['alertContext']?['condition']?['windowStartTime'], triggerBody()?['data']?['alertContext']?['windowStartTime']), 'UTC', '$CustomerTimeZone', 'yyyy-MM-dd HH:mm:ss'), ' ($CustomerTzAbbrev)')), '</td></tr>',
+    '<tr><td><b>Window End</b></td><td>', if(equals(coalesce(triggerBody()?['data']?['alertContext']?['condition']?['windowEndTime'], triggerBody()?['data']?['alertContext']?['windowEndTime'], ''), ''), 'N/A', concat(convertTimeZone(coalesce(triggerBody()?['data']?['alertContext']?['condition']?['windowEndTime'], triggerBody()?['data']?['alertContext']?['windowEndTime']), 'UTC', '$CustomerTimeZone', 'yyyy-MM-dd HH:mm:ss'), ' ($CustomerTzAbbrev)')), '</td></tr>',
   '</table>',
 
   '<h3 style="margin:14px 0 6px 0;">Log Analytics Workspace</h3>',
@@ -802,10 +802,58 @@ $alertEmailHtmlExpr = @'
 
 $repoBaseUrl     = "https://github.com/AzaryaShaulov/AVD/blob/main/AVD-SessionHost-Insights-Alerts"
 $alertMatrixUrl  = "$repoBaseUrl/AVD-Insights-Alert-Matrix.md"
-$runbookUrl      = "$repoBaseUrl/AVD-Insights-Alerts-Runbook.md"
+$runbookUrl      = "$repoBaseUrl/AVD-hosts-Insights-Alerts-Runbook.md"
+
+# Map Azure region to Windows timezone ID for local-time display in emails
+$regionTimeZoneMap = @{
+    'eastus'             = @{ tz = 'Eastern Standard Time';           abbrev = 'ET' }
+    'eastus2'            = @{ tz = 'Eastern Standard Time';           abbrev = 'ET' }
+    'centralus'          = @{ tz = 'Central Standard Time';           abbrev = 'CT' }
+    'northcentralus'     = @{ tz = 'Central Standard Time';           abbrev = 'CT' }
+    'southcentralus'     = @{ tz = 'Central Standard Time';           abbrev = 'CT' }
+    'westcentralus'      = @{ tz = 'Mountain Standard Time';          abbrev = 'MT' }
+    'westus'             = @{ tz = 'Pacific Standard Time';           abbrev = 'PT' }
+    'westus2'            = @{ tz = 'Pacific Standard Time';           abbrev = 'PT' }
+    'westus3'            = @{ tz = 'Mountain Standard Time';          abbrev = 'MT' }
+    'canadacentral'      = @{ tz = 'Eastern Standard Time';           abbrev = 'ET' }
+    'canadaeast'         = @{ tz = 'Eastern Standard Time';           abbrev = 'ET' }
+    'northeurope'        = @{ tz = 'GMT Standard Time';               abbrev = 'GMT' }
+    'westeurope'         = @{ tz = 'W. Europe Standard Time';         abbrev = 'CET' }
+    'uksouth'            = @{ tz = 'GMT Standard Time';               abbrev = 'GMT' }
+    'ukwest'             = @{ tz = 'GMT Standard Time';               abbrev = 'GMT' }
+    'francecentral'      = @{ tz = 'Romance Standard Time';           abbrev = 'CET' }
+    'germanywestcentral' = @{ tz = 'W. Europe Standard Time';         abbrev = 'CET' }
+    'switzerlandnorth'   = @{ tz = 'W. Europe Standard Time';         abbrev = 'CET' }
+    'norwayeast'         = @{ tz = 'W. Europe Standard Time';         abbrev = 'CET' }
+    'swedencentral'      = @{ tz = 'W. Europe Standard Time';         abbrev = 'CET' }
+    'australiaeast'      = @{ tz = 'AUS Eastern Standard Time';       abbrev = 'AEST' }
+    'australiasoutheast' = @{ tz = 'AUS Eastern Standard Time';       abbrev = 'AEST' }
+    'japaneast'          = @{ tz = 'Tokyo Standard Time';             abbrev = 'JST' }
+    'japanwest'          = @{ tz = 'Tokyo Standard Time';             abbrev = 'JST' }
+    'southeastasia'      = @{ tz = 'Singapore Standard Time';         abbrev = 'SGT' }
+    'eastasia'           = @{ tz = 'China Standard Time';             abbrev = 'HKT' }
+    'koreacentral'       = @{ tz = 'Korea Standard Time';             abbrev = 'KST' }
+    'centralindia'       = @{ tz = 'India Standard Time';             abbrev = 'IST' }
+    'brazilsouth'        = @{ tz = 'E. South America Standard Time';  abbrev = 'BRT' }
+    'southafricanorth'   = @{ tz = 'South Africa Standard Time';      abbrev = 'SAST' }
+    'uaenorth'           = @{ tz = 'Arabian Standard Time';           abbrev = 'GST' }
+}
+
+$locationKey = $Location.ToLowerInvariant().Replace(' ', '')
+if ($regionTimeZoneMap.ContainsKey($locationKey)) {
+    $CustomerTimeZone = $regionTimeZoneMap[$locationKey].tz
+    $CustomerTzAbbrev = $regionTimeZoneMap[$locationKey].abbrev
+} else {
+    Write-Warning "No timezone mapping for region '$Location'. Defaulting to UTC."
+    $CustomerTimeZone = 'UTC'
+    $CustomerTzAbbrev = 'UTC'
+}
+Write-Host "Timezone for region '$Location': $CustomerTimeZone ($CustomerTzAbbrev)"
 
 $alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$WorkspaceName', $WorkspaceName)
 $alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$WorkspaceId', $WorkspaceId)
+$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$CustomerTimeZone', $CustomerTimeZone)
+$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$CustomerTzAbbrev', $CustomerTzAbbrev)
 $alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$AlertMatrixUrl', $alertMatrixUrl)
 $alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$RunbookUrl', $runbookUrl)
 
@@ -1000,7 +1048,7 @@ $workflowDefinition = @{
                             type     = 'AppendToStringVariable'
                             inputs   = @{
                                 name  = 'ResultsTableHtml'
-                                value = "@{concat('<td>', if(equals(item(), null), '', string(item())), '</td>')}"
+                                value = "@{concat('<td>', if(and(not(equals(item(), null)), greater(length(string(item())), 19), startsWith(string(item()), '2'), contains(string(item()), 'T'), contains(string(item()), ':')), concat(convertTimeZone(string(item()), 'UTC', '$CustomerTimeZone', 'yyyy-MM-dd HH:mm:ss'), ' ($CustomerTzAbbrev)'), if(equals(item(), null), '', string(item()))), '</td>')}"
                             }
                             runAfter = @{}
                         }

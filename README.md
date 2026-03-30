@@ -4,7 +4,9 @@
 
 **Last Updated:** March 2026
 
-PowerShell automation for Azure Virtual Desktop that goes beyond standard Azure Monitor alert emails. These scripts deploy rich, detailed email alerts powered by Logic Apps that re-query Log Analytics at alert time, delivering operator-friendly HTML emails with affected host names, error codes, user names, and troubleshooting context.
+ PowerShell automation for Azure Virtual Desktop that goes beyond standard Azure Monitor alert emails. These scripts deploy rich, detailed email alerts powered by Logic Apps that re-query Log Analytics at alert time, delivering operator-friendly HTML emails with affected host names, error codes, user names, and troubleshooting context.
+
+These alerts are designed to enhance proactivity and increase awareness of issues occurring within the environment; they are not intended to replace the Azure Virtual Desktop Workbook. The Azure Virtual Desktop Workbook remains the primary, end-to-end tool for comprehensive troubleshooting. In contrast, these alerts provide timely notifications and visibility into issues as they arise, enabling faster response and investigation.
 
 **What it delivers:**
 

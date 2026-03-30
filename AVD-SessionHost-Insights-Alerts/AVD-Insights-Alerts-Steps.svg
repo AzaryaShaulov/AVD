@@ -78,7 +78,7 @@
     <text class="small" x="580" y="252">Create/update scheduled query rules</text>
   </a>
 
-  <a class="link" href="AVD-Insights-Alerts-Runbook.md" target="_top">
+  <a class="link" href="AVD-hosts-Insights-Alerts-Runbook.md" target="_top">
     <title>Step 3: Post-run validation</title>
     <rect class="nodeStep" x="1000" y="176" width="390" height="94" />
     <text class="nodeText" x="1020" y="208">Step 3 - Post-Run Validation</text>
@@ -146,7 +146,7 @@
     <text class="small" x="1338" y="576">Authenticated sender path</text>
   </a>
 
-  <a class="link" href="AVD-Insights-Alerts-Runbook.md" target="_top">
+  <a class="link" href="AVD-hosts-Insights-Alerts-Runbook.md" target="_top">
     <title>Detailed alert email output</title>
     <rect class="nodeRuntime" x="1610" y="500" width="110" height="92" />
     <text class="nodeText" x="1622" y="532">Email</text>

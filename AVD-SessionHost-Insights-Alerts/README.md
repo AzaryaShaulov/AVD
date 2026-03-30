@@ -55,7 +55,7 @@ Before running this solution, ensure:
 
 Use the runbook for operational response steps, validation checks, and day-2 maintenance guidance after deployment. Use the alert matrix to quickly understand each alert category, the monitored signals, and intended operator actions.
 
-- [Insights Runbook](AVD-Insights-Alerts-Runbook.md)
+- [Insights Runbook](AVD-hosts-Insights-Alerts-Runbook.md)
 - [Insights Alert Matrix](AVD-Insights-Alert-Matrix.md)
 
 ## Run Order
@@ -182,7 +182,7 @@ These are category-consolidated scheduled query alerts built on AVD Insights tel
 | This Repo | [AVD Session Host Insights](../AVD-SessionHost-Insights/) | AMA and DCR setup for Perf metrics collection |
 | This Repo | [Perf Metrics Script](../AVD-SessionHost-Insights/AVD-Insights-Enable-PerfMetricsDCR.ps1) | Deploys session host Perf metric collection prerequisites |
 | This Repo | [Insights Alert Matrix](AVD-Insights-Alert-Matrix.md) | Alert category and signal reference |
-| This Repo | [Insights Runbook](AVD-Insights-Alerts-Runbook.md) | Operational response and maintenance guidance |
+| This Repo | [Insights Runbook](AVD-hosts-Insights-Alerts-Runbook.md) | Operational response and maintenance guidance |
 | Microsoft Docs | [AVD Insights](https://learn.microsoft.com/en-us/azure/virtual-desktop/insights) | Official AVD Insights documentation |
 | Microsoft Docs | [Azure Monitor Scheduled Query Alerts](https://learn.microsoft.com/en-us/azure/azure-monitor/alerts/alerts-types#log-search-alerts) | Alert rule behavior and configuration details |
 
