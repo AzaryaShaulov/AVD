@@ -75,6 +75,7 @@
 
     Evaluate a specific user and export the action manifest for custom role creation.
 #>
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$SubscriptionId,

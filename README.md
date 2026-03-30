@@ -66,8 +66,8 @@ Both Logic App deployment scripts auto-create the Office 365 API connection, but
 | --- | --- |
 | AVD Diagnostics | [AVD-Diagnostics/README.md](AVD-Diagnostics/README.md) |
 | WVDErrors Alerts | [AVD-AzAlerts/README.md](AVD-AzAlerts/README.md) |
-| Alert Matrix (WVDErrors) | [AVD-AzAlerts/AVD-Alerts-Matrix.md](AVD-AzAlerts/AVD-Alerts-Matrix.md) |
-| Runbook (WVDErrors) | [AVD-AzAlerts/AVD-Alerts-Runbook.md](AVD-AzAlerts/AVD-Alerts-Runbook.md) |
+| Alert Matrix (WVDErrors) | [AVD-AzAlerts/AVD-AzAlerts-Alerts-Matrix.md](AVD-AzAlerts/AVD-AzAlerts-Alerts-Matrix.md) |
+| Runbook (WVDErrors) | [AVD-AzAlerts/AVD-AzAlerts-Runbook.md](AVD-AzAlerts/AVD-AzAlerts-Runbook.md) |
 | DCR and AMA Setup | [AVD-SessionHost-Insights/README.md](AVD-SessionHost-Insights/README.md) |
 | Insights Alerts | [AVD-SessionHost-Insights-Alerts/README.md](AVD-SessionHost-Insights-Alerts/README.md) |
 | Alert Matrix (Insights) | [AVD-SessionHost-Insights-Alerts/AVD-Insights-Alert-Matrix.md](AVD-SessionHost-Insights-Alerts/AVD-Insights-Alert-Matrix.md) |

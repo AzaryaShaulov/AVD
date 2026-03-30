@@ -1,155 +1,43 @@
-# AVD Session Host Insights Monitoring
+# AVD Session Host Insights Scripts Guide
 
-This script automates Azure Virtual Desktop session host performance monitoring by creating a Data Collection Rule (DCR) that sends performance counters to a Log Analytics workspace in both the `InsightsMetrics` and `Perf` tables. It automatically discovers **all AVD host pools** in the subscription and provides an interactive menu to associate the DCR with session hosts across selected host pools, enabling AVD Insights and VM Insights dashboards with a single run.
+**Last Updated:** March 2026
 
-Once perf data is flowing, the companion [AVD-SessionHost-Insights-Alerts](../AVD-SessionHost-Insights-Alerts/) scripts deploy **7 category-consolidated performance alerts with rich email notifications** - HTML emails that include the specific counter values, affected host names, and threshold breaches, far more actionable than standard Azure Monitor "alert fired" notifications.
+Production-ready PowerShell scripts that deploy AVD session host performance monitoring foundations and **7 category-based Insights alerts with rich email notifications**.
 
-## What It Does
+Standard Azure Monitor alert emails usually contain limited context. This workflow builds the monitoring baseline first (DCR plus host associations), then deploys a Logic App webhook pipeline that enriches alert payloads with query results from Log Analytics so operators receive actionable details without digging through multiple portal blades.
 
-- Creates or updates a DCR that collects performance counters into **two** tables:
-  - `InsightsMetrics` - consumed by VM Insights dashboards and workbooks
-  - `Perf` - consumed by Log Analytics queries and AVD Insights
-- Validates the DCR was created by resolving its resource ID
-- **Auto-discovers** all AVD host pools in the subscription
-- **Interactive association** with session hosts:
-  - [A] Associate with all host pools
-  - [S] Select specific host pools by number
-  - [N] Skip association
-- Automatically installs the `desktopvirtualization` Azure CLI extension if not present
-- Shows real-time progress with association status per VM
-- Reports per-pool and overall success/skip/fail counts
-- Supports idempotency: skips already-associated VMs automatically
+## Prerequisites
 
-## Script Reference
+- Azure CLI installed and authenticated (`az login`)
+- Azure CLI `desktopvirtualization` extension available (auto-installed by the DCR script if missing)
+- Azure CLI `scheduled-query` extension available (required for alert rule deployment)
+- Target Log Analytics workspace receiving AVD diagnostics and Perf counter data
+- Required RBAC on target subscription, resource groups, and workspace
+- Azure Monitor Agent deployment handled separately (recommended: Azure Policy)
+- For webhook email delivery: authorize the Office 365 API connection after deployment in Azure Portal
 
-| # | Script | Purpose | What It Does | Quick Start (copy & paste) |
-| -- | ------ | ------- | ------------ | -------------------------- |
-| 1 | `AVD-Insights-Enable-PerfMetricsDCRps1` | Deploy DCR for perf counters | Creates a Data Collection Rule collecting 28 perf counters into `InsightsMetrics` and `Perf` tables, auto-discovers all AVD host pools, and provides an interactive menu to associate the DCR with session hosts. Add `-InstallAma` to also install AMA on VMs where missing. | `.\AVD-Insights-Enable-PerfMetricsDCRps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2"` |
-| 2 | `AVD-Insights-Alerts-Precheck.ps1` | Validate Insights prerequisites | Checks RBAC permissions, Azure CLI extensions, LAW connectivity, and verifies Perf counter data flow. Read-only - no changes made. | `..\AVD-SessionHost-Insights-Alerts\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"` |
-| 3 | `AVD-Insights-Alerts-Deploy-LogicApp.ps1` | **Primary: deploy Insights alerts + email pipeline** | Creates/updates the Logic App, Office 365 API connection, webhook action group, assigns Log Analytics Reader to the Logic App managed identity, and bootstraps all 7 `AVD-Insights-Category-*` alerts. Single command does everything. | `..\AVD-SessionHost-Insights-Alerts\AVD-Insights-Alerts-Deploy-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-Insights-Alert-Email" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmail "team@contoso.com"` |
-| 4 | `AVD-Insights-Alerts-Category-Alerts.ps1` | Create Insights alert rules only | Reads alert definitions from `alerts-config.insights.json`, loads KQL query files, and creates scheduled query rules. Called automatically by script #3 - run directly only for standalone alert creation. | `..\AVD-SessionHost-Insights-Alerts\AVD-Insights-Alerts-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2"` |
+## Run Order
 
-**Additional modes:**
+1. Run [`AVD-Insights-Enable-PerfMetricsDCR.ps1`](AVD-Insights-Enable-PerfMetricsDCR.ps1) to create/update DCR and associate it with session hosts.
+2. Run [`AVD-Insights-Alerts-Precheck.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Precheck.ps1) to validate Insights alert prerequisites.
+3. Run [`AVD-Insights-Alerts-Deploy-LogicApp.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Deploy-LogicApp.ps1) as the single deployment entry point for detailed alert email delivery.
+4. Optionally run [`AVD-Insights-Alerts-Category-Alerts.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Category-Alerts.ps1) for alerts-only updates.
 
-| Mode | Command |
-| ---- | ------- |
-| With AMA install | `.\AVD-Insights-Enable-PerfMetricsDCRps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -InstallAma` |
-| WhatIf (preview changes) | `.\AVD-Insights-Enable-PerfMetricsDCRps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -WhatIf` |
-| Verbose + transcript | `.\AVD-Insights-Enable-PerfMetricsDCRps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -TranscriptPath "C:\Logs\dcr.log" -Verbose` |
+## Recommended Rollout
 
-## Features (v1.8)
+1. Run [`AVD-Insights-Enable-PerfMetricsDCR.ps1`](AVD-Insights-Enable-PerfMetricsDCR.ps1) to establish DCR and host associations.
+2. Confirm data starts flowing to both `InsightsMetrics` and `Perf` tables.
+3. Run [`AVD-Insights-Alerts-Precheck.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Precheck.ps1) to validate alert prerequisites.
+4. Run [`AVD-Insights-Alerts-Deploy-LogicApp.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Deploy-LogicApp.ps1) to deploy detailed alert routing.
+5. Authorize Office 365 API connection in Azure Portal.
+6. Re-run precheck and validate first test alert end to end.
 
-- **Enhanced Monitoring**: 28 performance counters covering CPU, memory, disk (per-volume), AVD session quality (input delay, RTT, UDP, GPU), session lifecycle (Terminal Services), and network bandwidth
-- **Progress Indicators**: Real-time progress bar with percentage complete
-- **Idempotency Checks**: Automatically detects and skips existing associations
-- **Transcript Support**: Optional logging of full script execution
-- **WhatIf Mode**: Preview all changes without making any modifications
-- **Verbose Logging**: Detailed diagnostic output with `-Verbose` flag
-- **REST API Integration**: Uses Azure REST API for reliable session host enumeration
+## Sample Usage
 
-## Parameters
-
-| Parameter | Required | Default | Description |
-| --------- | -------- | ------- | ----------- |
-| `SubscriptionId` | **Yes** | - | Azure subscription ID |
-| `LawRG` | No | `rg-avd-monitoring` | Resource group of the Log Analytics workspace |
-| `LawName` | No | `law-avd-prod` | Log Analytics workspace name |
-| `DcrRG` | No | `rg-avd-monitoring` | Resource group where the DCR is created |
-| `DcrName` | No | `AVD-SessionHost-DCR` | Name of the Data Collection Rule |
-| `Location` | No | `EastUS2` | Azure region for the DCR |
-| `SamplingFrequencyInSeconds` | No | `60` | Counter polling interval (10-3600 seconds) |
-| `CounterSpecifiers` | No | 28 counters | Array of performance counter paths to collect |
-| `TranscriptPath` | No | - | Optional path to save full script execution transcript |
-| `InstallAma` | No | Off | Also check and install Azure Monitor Agent on session host VMs during DCR association |
-| `AmaOnly` | No | Off | Run AMA validation/install workflow only (implies `-InstallAma`). Skips DCR create/update and associations |
-
-## Counters Collected (Default - 28 Total)
-
-### CPU (1)
-
-| Counter | Description |
-| ------- | ----------- |
-| `Processor Information(_Total)\% Processor Time` | CPU utilization |
-
-### Memory (4)
-
-| Counter | Description |
-| ------- | ----------- |
-| `Memory\Available MBytes` | Free memory |
-| `Memory\% Committed Bytes In Use` | Memory pressure |
-| `Memory\Pages/sec` | Hard page faults requiring disk I/O |
-| `Memory\Page Faults/sec` | Total page faults (soft + hard) |
-
-### Disk Capacity (1)
-
-| Counter | Description |
-| ------- | ----------- |
-| `LogicalDisk(*)\% Free Space` | Disk free space percentage (per volume) |
-
-### Disk Latency (6)
-
-| Counter | Description |
-| ------- | ----------- |
-| `LogicalDisk(*)\Avg. Disk sec/Read` | Logical disk read latency |
-| `LogicalDisk(*)\Avg. Disk sec/Write` | Logical disk write latency |
-| `LogicalDisk(*)\Avg. Disk sec/Transfer` | Logical disk overall latency |
-| `PhysicalDisk(*)\Avg. Disk sec/Read` | Physical disk read latency |
-| `PhysicalDisk(*)\Avg. Disk sec/Write` | Physical disk write latency |
-| `PhysicalDisk(*)\Avg. Disk sec/Transfer` | Physical disk overall latency |
-
-### Disk Queue (2)
-
-| Counter | Description |
-| ------- | ----------- |
-| `LogicalDisk(*)\Current Disk Queue Length` | Logical disk queue depth |
-| `PhysicalDisk(*)\Avg. Disk Queue Length` | Physical disk average queue depth |
-
-### AVD Session Quality (5)
-
-| Counter | Description |
-| ------- | ----------- |
-| `User Input Delay per Process(*)\Max Input Delay` | Per-process input delay |
-| `User Input Delay per Session(*)\Max Input Delay` | Per-session input delay |
-| `RemoteFX Network(*)\Current TCP RTT` | TCP round-trip latency |
-| `RemoteFX Network(*)\Current UDP Bandwidth` | UDP bandwidth (RDP Shortpath) |
-| `RemoteFX Graphics(*)\Average Encoding Time` | GPU encoding time (GPU hosts) |
-
-### AVD Session Lifecycle (3)
-
-| Counter | Description |
-| ------- | ----------- |
-| `Terminal Services\Active Sessions` | Active session count per host |
-| `Terminal Services\Inactive Sessions` | Disconnected/idle session count |
-| `Terminal Services\Total Sessions` | Total session count per host |
-
-### Network Bandwidth (4)
-
-| Counter | Description |
-| ------- | ----------- |
-| `Network Adapter(*)\Bytes Total/sec` | Total network throughput |
-| `Network Adapter(*)\Bytes Received/sec` | Inbound network bandwidth |
-| `Network Adapter(*)\Bytes Sent/sec` | Outbound network bandwidth |
-| `Network Adapter(*)\Current Bandwidth` | Network adapter link speed |
-
-### Network Queue (1)
-
-| Counter | Description |
-| ------- | ----------- |
-| `Network Adapter(*)\Output Queue Length` | Network output queue depth |
-
-## Requirements
-
-- Azure CLI installed and logged in (`az login`)
-- **Monitoring Contributor** on the DCR resource group and Log Analytics workspace
-- **Desktop Virtualization Reader** on the subscription (for host pool discovery)
-- The `desktopvirtualization` Azure CLI extension - installed automatically by the script if missing
-
-## Usage
-
-### Default mode: Create DCR + associate session hosts
+### Deploy Monitoring Foundation (DCR plus Associations)
 
 ```powershell
-.\AVD-Insights-Enable-PerfMetricsDCRps1 `
+pwsh -NoProfile -File ./AVD-Insights-Enable-PerfMetricsDCR.ps1 `
   -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
   -LawRG "rg-avd-monitoring" `
   -LawName "law-avd-prod" `
@@ -158,177 +46,100 @@ Once perf data is flowing, the companion [AVD-SessionHost-Insights-Alerts](../AV
   -Location "eastus2"
 ```
 
-The script will:
-
-1. Create/update the DCR
-2. Discover all host pools in the subscription
-3. Display an interactive menu:
-
-  ```text
-   Discovered 5 host pool(s):
-     [1] AVD-Pooled  (RG: rg-avd-pooled)
-     [2] Contoso-AppSharePool  (RG: rg-avd-monitoring)
-     [3] Contoso-EntraID-HostPool  (RG: rg-avd-entra)
-     [4] Personal-Pool  (RG: rg-avd-monitoring)
-     [5] SharedDesktops-Pool  (RG: rg-avd-shared)
-   
-   Associate DCR 'AVD-SessionHost-DCR' with session hosts in:
-     [A] All host pools
-     [S] Select specific host pools
-     [N] Skip
-   
-   Choice:
-   ```
-
-### WhatIf mode: Preview changes without applying
-
-```powershell
-.\AVD-Insights-Enable-PerfMetricsDCRps1 `
-  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -LawRG "rg-avd-monitoring" `
-  -LawName "law-avd-prod" `
-  -DcrRG "rg-avd-monitoring" `
-  -DcrName "AVD-SessionHost-DCR" `
-  -Location "eastus2" `
-  -WhatIf
-```
-
-### With transcript logging and verbose output
-
-```powershell
-.\AVD-Insights-Enable-PerfMetricsDCRps1 `
-  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -LawRG "rg-avd-monitoring" `
-  -LawName "law-avd-prod" `
-  -DcrRG "rg-avd-monitoring" `
-  -DcrName "AVD-SessionHost-DCR" `
-  -Location "eastus2" `
-  -TranscriptPath "C:\Logs\DCR-Setup.log" `
-  -Verbose
-```
-
-### With AMA install: Also install Azure Monitor Agent on VMs
-
-```powershell
-.\AVD-Insights-Enable-PerfMetricsDCRps1 `
-  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -LawRG "rg-avd-monitoring" `
-  -LawName "law-avd-prod" `
-  -DcrRG "rg-avd-monitoring" `
-  -DcrName "AVD-SessionHost-DCR" `
-  -Location "eastus2" `
-  -InstallAma
-```
-
-Same as default, but also checks each session host VM for the Azure Monitor Agent extension and installs it where missing.
-
-### Skip confirmation prompts (unsafe - for automation)
-
-```powershell
-.\AVD-Insights-Enable-PerfMetricsDCRps1 `
-  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
-  -LawRG "rg-avd-monitoring" `
-  -LawName "law-avd-prod" `
-  -DcrRG "rg-avd-monitoring" `
-  -DcrName "AVD-SessionHost-DCR" `
-  -Location "eastus2" `
-  -Confirm:$false
-```
-
-## Post-Deployment
-
-After running with interactive association, the script prints a detailed summary:
+Interactive prompt/output example:
 
 ```text
-=== Association Summary ===
-Total Pools Processed: 5
-Successful: 14
-Skipped (already associated): 0
-Failed: 0
-Duration: 01:55
+Discovered 5 host pool(s):
+  [1] AVD-Pooled  (RG: rg-avd-pooled)
+  [2] Contoso-AppSharePool  (RG: rg-avd-monitoring)
+  [3] Contoso-EntraID-HostPool  (RG: rg-avd-entra)
+  [4] Personal-Pool  (RG: rg-avd-monitoring)
+  [5] SharedDesktops-Pool  (RG: rg-avd-shared)
+
+Associate DCR 'AVD-SessionHost-DCR' with session hosts in:
+  [A] All host pools
+  [S] Select specific host pools
+  [N] Skip
+
+Choice:
 ```
 
-Data appears in `InsightsMetrics` and `Perf` within 5-15 minutes.
-
-## Verification
-
-### Check DCR exists
+### Deploy Rich Insights Alerts (Logic App Entry Point)
 
 ```powershell
-az monitor data-collection rule show `
-  -g "rg-avd-monitoring" `
-  -n "AVD-SessionHost-DCR" `
-  -o table
+pwsh -NoProfile -File ../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Deploy-LogicApp.ps1 `
+  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+  -ResourceGroupName "rg-avd-prod" `
+  -LogicAppName "AVD-Insights-Alert-Email" `
+  -Location "eastus2" `
+  -WorkspaceName "law-avd-prod" `
+  -WorkspaceResourceGroupName "rg-avd-prod" `
+  -SendFromEmail "alerts@contoso.com" `
+  -SendToEmail "avd-oncall@contoso.com"
 ```
 
-### Verify association for a specific VM
+### Validate Prerequisites and Data Flow
 
 ```powershell
-az monitor data-collection rule association list `
-  --resource "/subscriptions/{sub-id}/resourceGroups/{rg}/providers/Microsoft.Compute/virtualMachines/{vm-name}" `
-  --query "[?contains(dataCollectionRuleId, 'AVD-SessionHost-DCR')].{Name:name, DCR:dataCollectionRuleId}" `
-  -o table
+pwsh -NoProfile -File ../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Precheck.ps1 `
+  -SubscriptionId "YOUR-SUBSCRIPTION-ID" `
+  -ResourceGroupName "rg-avd-prod" `
+  -WorkspaceName "law-avd-prod"
 ```
 
-### Query data in Log Analytics
+## Post-Deployment: Authorize Office 365 Connection
 
-```kql
-// Check InsightsMetrics table
-InsightsMetrics
-| where TimeGenerated > ago(1h)
-| where Namespace == "Processor" or Namespace == "Memory" or Namespace == "LogicalDisk" or Namespace == "Network"
-| summarize count() by Name, Namespace, bin(TimeGenerated, 5m)
+After deploying [`AVD-Insights-Alerts-Deploy-LogicApp.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Deploy-LogicApp.ps1), the Office 365 API connection must be manually authorized in Azure Portal before emails will send.
 
-// Check Perf table
-Perf
-| where TimeGenerated > ago(1h)
-| where ObjectName in ("Processor", "Memory", "LogicalDisk", "PhysicalDisk", "Network Adapter")
-| summarize count() by ObjectName, CounterName, bin(TimeGenerated, 5m)
-```
+1. Navigate to: **Azure Portal** -> **Resource Group** -> **API Connections** -> your Insights Office 365 connection.
+2. Click **Edit API connection** -> **Authorize** -> sign in with a mailbox that can send as the `-SendFromEmail` identity.
+3. Click **Save**.
+4. Re-run [`AVD-Insights-Alerts-Precheck.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Precheck.ps1) to confirm readiness.
+
+> **Note:** Until authorization is complete, alert rules can fire but email delivery from the Logic App will fail.
+
+## Dependency Diagram
+
+Click the diagram to open the full-size SVG:
+
+[![AVD Session Host Insights Dependency Diagram](AVD-Insights-Dependency-Diagram.svg)](AVD-Insights-Dependency-Diagram.svg)
+
+## Script Reference
+
+| # | Script | Purpose | What It Does | Quick Start (copy and paste) |
+| -- | ------ | ------- | ------------ | ----------------------------- |
+| 1 | [`AVD-Insights-Enable-PerfMetricsDCR.ps1`](AVD-Insights-Enable-PerfMetricsDCR.ps1) | Deploy DCR for Perf counters | Creates/updates a Data Collection Rule for 28 counters, auto-discovers AVD host pools, and interactively associates the DCR with session hosts. | `./AVD-Insights-Enable-PerfMetricsDCR.ps1 -SubscriptionId "YOUR-SUB-ID" -LawRG "YOUR-LAW-RG" -LawName "YOUR-LAW" -DcrRG "YOUR-DCR-RG" -DcrName "AVD-SessionHost-DCR" -Location "eastus2"` |
+| 2 | [`AVD-Insights-Alerts-Precheck.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Precheck.ps1) | Validate Insights prerequisites | Checks RBAC, extension readiness, workspace connectivity, and required data flow for Insights alerts. Read-only. | `../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"` |
+| 3 | [`AVD-Insights-Alerts-Deploy-LogicApp.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Deploy-LogicApp.ps1) | **Primary: deploy alerts plus email pipeline** | Creates/updates Logic App, API connection, detailed action group, managed identity role assignment, and bootstraps all 7 `AVD-Insights-Category-*` alerts. | `../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Deploy-LogicApp.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -LogicAppName "AVD-Insights-Alert-Email" -Location "eastus2" -WorkspaceName "YOUR-LAW" -WorkspaceResourceGroupName "YOUR-LAW-RG" -SendFromEmail "alerts@contoso.com" -SendToEmail "team@contoso.com"` |
+| 4 | [`AVD-Insights-Alerts-Category-Alerts.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Category-Alerts.ps1) | Create alert rules only | Creates and maintains `AVD-Insights-Category-*` scheduled query alerts from config and KQL files. Called automatically by script #3. | `../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Category-Alerts.ps1 -ResourceGroup "YOUR-RG" -WorkspaceName "YOUR-LAW" -Location "eastus2"` |
+
+## Access and Change Impact by Script
+
+| Script | Minimum Access | Azure Resources Changed | Identity Impact | Runtime Calls / Local Output |
+| --- | --- | --- | --- | --- |
+| [`AVD-Insights-Enable-PerfMetricsDCR.ps1`](AVD-Insights-Enable-PerfMetricsDCR.ps1) | Monitoring Contributor on DCR and LAW scopes; Desktop Virtualization Reader for host pool discovery | Creates/updates DCR and VM DCR associations | None | Azure control-plane calls via `az`; interactive console output |
+| [`AVD-Insights-Alerts-Precheck.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Precheck.ps1) | Read access to relevant resource scopes | None (read-only validation) | None | Azure read calls and validation output |
+| [`AVD-Insights-Alerts-Deploy-LogicApp.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Deploy-LogicApp.ps1) | Contributor on target RG plus role assignment write at workspace scope | Creates/updates Logic App, Office365 API connection, action group, and alert bindings | Enables system-assigned managed identity and assigns workspace reader role | Azure control-plane calls; deployment output |
+| [`AVD-Insights-Alerts-Category-Alerts.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Category-Alerts.ps1) | Monitoring Contributor on target RG/workspace | Creates/updates scheduled query alert rules | None | Azure control-plane calls and deployment summary |
 
 ## Troubleshooting
 
-### Extension installation fails
+| Symptom | Likely Cause | Resolution |
+| --- | --- | --- |
+| No data in `InsightsMetrics` or `Perf` after rollout | DCR not associated with session hosts or ingestion delay | Verify associations and wait 5 to 15 minutes for ingestion |
+| Session host enumeration fails | Missing Desktop Virtualization Reader scope access | Grant required RBAC and rerun with `-Verbose` |
+| Detailed emails not sent | Office 365 API connection not authorized | Complete post-deployment API connection authorization |
+| Alert deployment fails with scheduled-query extension error | `scheduled-query` CLI extension missing | Run `az extension add --name scheduled-query` |
+| Role assignment fails during Logic App deploy | Caller lacks `Microsoft.Authorization/roleAssignments/write` | Use precheck output and grant required role-assignment permission |
 
-If the `desktopvirtualization` extension fails to install automatically, install it manually:
+## Monitoring Coverage
 
-```powershell
-az extension add --name desktopvirtualization
-```
-
-### DCR creation fails with "InvalidPayload"
-
-Common causes:
-
-- **Datasource name too long** (max 32 chars) - Fixed in v1.6+
-- **Invalid counter path** - Verify counter names match Windows Performance Monitor syntax
-
-### Session host enumeration fails
-
-The script uses Azure REST API to enumerate session hosts. If this fails:
-
-1. Verify you have **Desktop Virtualization Reader** role on the subscription
-2. Check the host pool exists: `az desktopvirtualization hostpool list -o table`
-3. Run with `-Verbose` flag to see detailed error messages
-
-### No data appearing in Log Analytics
-
-Wait 5-15 minutes after association, then:
-
-1. Verify the DCR association exists (see Verification section above)
-2. Check the Azure Monitor Agent is installed on the VMs
-3. Verify the VM has network connectivity to Azure Monitor endpoints
-
-## Version History
-
-- **v1.8** (2026-03-16): Added 11 AVD-specific counters (input delay, RTT, UDP, GPU, Terminal Services, memory pages, disk queue); changed disk instances from (_Total) to (*) for per-volume alerting (28 total counters)
-- **v1.7** (2026-02-18): Enhanced disk latency and network bandwidth counters (17 counters)
-- **v1.6** (2026-02-18): Fixed DCR datasource names, REST API for session hosts, division by zero guard
-- **v1.5**: Enhanced with progress indicators, idempotency checks, transcript support
-- **v1.0**: Initial release with basic DCR creation and manual association
+- DCR counters: see [AVD-SessionHost-PerfCounters.md](AVD-SessionHost-PerfCounters.md)
+- Insights category details: see [AVD-Insights-Alert-Matrix.md](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alert-Matrix.md)
+- Operations runbook: see [AVD-Insights-Alerts-Runbook.md](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Runbook.md)
 
 ## Related Links
 
-- [Azure Virtual Desktop Insights](https://learn.microsoft.com/en-us/azure/virtual-desktop/insights)
-- [Data Collection Rules](https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/data-collection-rule-overview)
-- [Azure Monitor Agent](https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-overview)
+- [AVD Insights Documentation](https://learn.microsoft.com/en-us/azure/virtual-desktop/insights)
+- [Data Collection Rules Overview](https://learn.microsoft.com/en-us/azure/azure-monitor/essentials/data-collection-rule-overview)
+- [Azure Monitor Agent Overview](https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-overview)

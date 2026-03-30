@@ -12,4 +12,9 @@ AVD-AzAlerts/*.csv
 # Work-in-progress scripts (not ready for repo)
 AVD-SessionHost-Insights/AVD-Insights-Deploy-AMA-Agent.ps1
 
+# AVD-Discord secrets — never commit .env files or local config
+AVD-Discord/.env
+**/.env
+**/.env.*
+
 

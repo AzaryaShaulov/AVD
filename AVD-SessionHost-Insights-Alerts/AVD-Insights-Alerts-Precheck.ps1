@@ -48,6 +48,7 @@
       -WorkspaceName "law-avd-prod" `
       -Assignee "deployer@contoso.com"
 #>
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')]
@@ -293,7 +294,6 @@ if ($CheckDataFlow -and $null -ne $law) {
     Write-Log ""
     Write-Log "=== Data Flow Checks ===" "Cyan"
 
-    $lawResourceId = $law.id
     $customerId = $law.customerId
 
     # Check Perf counter data

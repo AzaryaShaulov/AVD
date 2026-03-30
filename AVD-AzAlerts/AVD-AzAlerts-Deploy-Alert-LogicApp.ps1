@@ -101,6 +101,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     - Supports either -SendToEmail (single) or -SendToEmails (multiple recipients).
 #>
 
+[CmdletBinding()]
 param(
     [ValidateNotNullOrEmpty()]
     [string]$SubscriptionId,

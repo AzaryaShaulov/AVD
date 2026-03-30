@@ -117,6 +117,10 @@ Recommended validation command:
 .\AVD-Insights-Alerts-Precheck.ps1 -SubscriptionId "YOUR-SUB-ID" -ResourceGroupName "YOUR-RG" -WorkspaceName "YOUR-LAW"
 ```
 
+Script steps diagram:
+
+[![AVD Insights Alerts Script Steps](AVD-Insights-Alerts-Steps.svg)](AVD-Insights-Alerts-Steps.svg)
+
 ## Script Reference, Access Impact, and Parameters
 
 | Script | Purpose | What It Does | Starter Command | Additional Modes | Minimum Access | Azure Resources Changed | Identity Impact | Runtime Calls and Local Output |
@@ -176,7 +180,7 @@ These are category-consolidated scheduled query alerts built on AVD Insights tel
 | This Repo | [AVD Diagnostics](../AVD-Diagnostics/) | Enable and validate AVD diagnostics required for lifecycle signals |
 | This Repo | [AVD Az Alerts](../AVD-AzAlerts/) | WVDErrors-category alerts for connection/authentication failures |
 | This Repo | [AVD Session Host Insights](../AVD-SessionHost-Insights/) | AMA and DCR setup for Perf metrics collection |
-| This Repo | [Perf Metrics Script](../AVD-SessionHost-Insights/AVD-Insights-Enable-PerfMetricsDCRps1) | Deploys session host Perf metric collection prerequisites |
+| This Repo | [Perf Metrics Script](../AVD-SessionHost-Insights/AVD-Insights-Enable-PerfMetricsDCR.ps1) | Deploys session host Perf metric collection prerequisites |
 | This Repo | [Insights Alert Matrix](AVD-Insights-Alert-Matrix.md) | Alert category and signal reference |
 | This Repo | [Insights Runbook](AVD-Insights-Alerts-Runbook.md) | Operational response and maintenance guidance |
 | Microsoft Docs | [AVD Insights](https://learn.microsoft.com/en-us/azure/virtual-desktop/insights) | Official AVD Insights documentation |

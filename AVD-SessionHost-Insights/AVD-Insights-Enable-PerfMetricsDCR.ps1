@@ -45,28 +45,14 @@
 .PARAMETER TranscriptPath
   Optional path to save a transcript of the script execution.
 
-.PARAMETER InstallAma
-  Also check and install Azure Monitor Agent (AMA) extension on session host VMs during DCR association.
-  Without this switch the script creates/updates the DCR and associates it but skips AMA install checks.
-
-.PARAMETER AmaOnly
-  Run AMA validation/install workflow only. Skips LAW/DCR validation, DCR create/update, and DCR associations.
-  Implies -InstallAma.
-
 .PARAMETER WhatIf
   Built-in common parameter (SupportsShouldProcess). Preview changes without applying them.
 
 .EXAMPLE
-  # Create DCR, discover all host pools, and interactively associate (no AMA install)
+  # Create DCR, discover all host pools, and interactively associate
   .\AVD-Insights-Enable-PerfMetricsDCRps1 -SubscriptionId "YOUR-SUB-ID" `
     -LawRG "rg-avd-monitoring" -LawName "law-avd-prod" -DcrRG "rg-avd-monitoring" `
     -DcrName "AVD-SessionHost-DCR" -Location "eastus2"
-
-.EXAMPLE
-  # Same as above, but also install AMA on VMs that are missing it
-  .\AVD-Insights-Enable-PerfMetricsDCRps1 -SubscriptionId "YOUR-SUB-ID" `
-    -LawRG "rg-avd-monitoring" -LawName "law-avd-prod" -DcrRG "rg-avd-monitoring" `
-    -DcrName "AVD-SessionHost-DCR" -Location "eastus2" -InstallAma
 
 .EXAMPLE
   # WhatIf preview - no changes applied, host pools listed
@@ -83,7 +69,7 @@
 
 .NOTES
   Requires: Azure CLI with Monitoring Contributor + Desktop Virtualization Reader permissions
-  Version: 1.8 (Added AVD-specific counters: input delay, RTT, UDP, GPU, Terminal Services; disk instances changed to per-volume)
+  Version: 1.9 (Removed AMA install workflow; script now handles DCR and associations only)
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -161,123 +147,11 @@ param(
   ),
 
   [Parameter(Mandatory = $false)]
-  [string]$TranscriptPath,
-
-  [Parameter(Mandatory = $false)]
-  [switch]$InstallAma,
-
-  [Parameter(Mandatory = $false)]
-  [switch]$AmaOnly
+  [string]$TranscriptPath
 )
 
 $ErrorActionPreference = "Stop"
 $scriptStart = Get-Date
-
-function Get-VMInfoFromResourceId {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$ResourceId
-  )
-
-  $pattern = '^/subscriptions/[^/]+/resourceGroups/(?<rg>[^/]+)/providers/Microsoft\.Compute/virtualMachines/(?<vm>[^/]+)$'
-  if ($ResourceId -match $pattern) {
-    return [PSCustomObject]@{
-      ResourceGroup = $matches['rg']
-      VmName        = $matches['vm']
-    }
-  }
-
-  return $null
-}
-
-function Test-AmaExtensionInstalled {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$VmResourceGroup,
-
-    [Parameter(Mandatory = $true)]
-    [string]$VmName,
-
-    [Parameter(Mandatory = $true)]
-    [string]$ExtensionName
-  )
-
-  $global:LASTEXITCODE = 0
-  az vm extension show `
-    --resource-group $VmResourceGroup `
-    --vm-name $VmName `
-    --name $ExtensionName `
-    --only-show-errors `
-    -o none 2>$null
-
-  return ($LASTEXITCODE -eq 0)
-}
-
-function Get-VmOsType {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$VmResourceGroup,
-
-    [Parameter(Mandatory = $true)]
-    [string]$VmName
-  )
-
-  $global:LASTEXITCODE = 0
-  $osType = az vm show `
-    --resource-group $VmResourceGroup `
-    --name $VmName `
-    --query "storageProfile.osDisk.osType" `
-    --only-show-errors `
-    -o tsv 2>$null
-
-  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($osType)) {
-    return $null
-  }
-
-  return $osType.Trim()
-}
-
-function Install-AmaExtension {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$VmResourceGroup,
-
-    [Parameter(Mandatory = $true)]
-    [string]$VmName,
-
-    [Parameter(Mandatory = $true)]
-    [string]$ExtensionName
-  )
-
-  $global:LASTEXITCODE = 0
-  $installErr = $null
-  $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-  $installOutput = az vm extension set `
-    --resource-group $VmResourceGroup `
-    --vm-name $VmName `
-    --publisher "Microsoft.Azure.Monitor" `
-    --name $ExtensionName `
-    --enable-auto-upgrade true `
-    --only-show-errors `
-    -o none 2>&1
-  $installExitCode = $LASTEXITCODE
-  $ErrorActionPreference = $prevEAP
-  if ($installExitCode -ne 0) {
-    $installErr = $installOutput
-  }
-
-  if ($installExitCode -ne 0) {
-    return [PSCustomObject]@{
-      Success = $false
-      Error   = $installErr
-    }
-  }
-
-  return [PSCustomObject]@{
-    Success = $true
-    Error   = $null
-  }
-}
 
 if ($TranscriptPath) {
   try {
@@ -289,11 +163,6 @@ if ($TranscriptPath) {
 }
 
 try {
-  if ($AmaOnly) {
-    $InstallAma = [switch]::new($true)
-    Write-Verbose "-AmaOnly implies -InstallAma; AMA checks will run."
-  }
-
   #region Prerequisites Check
   if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
     throw "Azure CLI (az) not found. Please install and try again."
@@ -313,56 +182,51 @@ try {
   $LawId = $null
   $DcrId = $null
 
-  if (-not $AmaOnly) {
-    # Validate resource groups exist
-    Write-Verbose "Validating resource groups..."
-    foreach ($rg in @($LawRG, $DcrRG) | Select-Object -Unique) {
-      $rgExists = az group exists --name $rg 2>$null
-      if ($rgExists -ne "true") {
-        throw "Resource group '$rg' does not exist in subscription $SubscriptionId"
-      }
+  # Validate resource groups exist
+  Write-Verbose "Validating resource groups..."
+  foreach ($rg in @($LawRG, $DcrRG) | Select-Object -Unique) {
+    $rgExists = az group exists --name $rg 2>$null
+    if ($rgExists -ne "true") {
+      throw "Resource group '$rg' does not exist in subscription $SubscriptionId"
     }
+  }
 
-    # Resolve LAW resourceId
-    Write-Verbose "Resolving Log Analytics Workspace ID..."
-    $global:LASTEXITCODE = 0
-    $LawId = az monitor log-analytics workspace show -g $LawRG -n $LawName --query id -o tsv --only-show-errors 2>$null
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($LawId)) {
-      throw "Could not resolve LAW workspace $LawName in RG $LawRG"
-    }
-    $LawId = $LawId.Trim()
+  # Resolve LAW resourceId
+  Write-Verbose "Resolving Log Analytics Workspace ID..."
+  $global:LASTEXITCODE = 0
+  $LawId = az monitor log-analytics workspace show -g $LawRG -n $LawName --query id -o tsv --only-show-errors 2>$null
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($LawId)) {
+    throw "Could not resolve LAW workspace $LawName in RG $LawRG"
+  }
+  $LawId = $LawId.Trim()
 
-    # Check if DCR exists (distinguish ResourceNotFound from other errors)
-    Write-Verbose "Checking if DCR '$DcrName' exists..."
-    $exists = $true
-    $global:LASTEXITCODE = 0
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    $dcrCheckErr = az monitor data-collection rule show -g $DcrRG -n $DcrName -o none --only-show-errors 2>&1
-    $dcrCheckExitCode = $LASTEXITCODE
-    $ErrorActionPreference = $prevEAP
-    if ($dcrCheckExitCode -ne 0) {
-      $errText = ($dcrCheckErr | Out-String)
-      if ($errText -match "ResourceNotFound|could not be found|not found") {
-        $exists = $false
-        Write-Verbose "DCR does not exist; will create new."
-      } else {
-        throw "Failed to check DCR existence for '$DcrName': $errText"
-      }
+  # Check if DCR exists (distinguish ResourceNotFound from other errors)
+  Write-Verbose "Checking if DCR '$DcrName' exists..."
+  $exists = $true
+  $global:LASTEXITCODE = 0
+  $prevEAP = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  $dcrCheckErr = az monitor data-collection rule show -g $DcrRG -n $DcrName -o none --only-show-errors 2>&1
+  $dcrCheckExitCode = $LASTEXITCODE
+  $ErrorActionPreference = $prevEAP
+  if ($dcrCheckExitCode -ne 0) {
+    $errText = ($dcrCheckErr | Out-String)
+    if ($errText -match "ResourceNotFound|could not be found|not found") {
+      $exists = $false
+      Write-Verbose "DCR does not exist; will create new."
     } else {
-      Write-Verbose "DCR exists; will update."
+      throw "Failed to check DCR existence for '$DcrName': $errText"
     }
   } else {
-    Write-Verbose "AmaOnly enabled: skipping LAW/DCR validation and DCR provisioning."
+    Write-Verbose "DCR exists; will update."
   }
   #endregion
 
-  if (-not $AmaOnly) {
-    #region DCR Creation
-    # Consistent naming for DCR components (names must be <=32 chars)
-    $laName = "destination-LAW"
-    $perfInsightsName = "datasource-InsightsMetrics"
-    $perfTableName = "datasource-Perf"
+  #region DCR Creation
+  # Consistent naming for DCR components (names must be <=32 chars)
+  $laName = "destination-LAW"
+  $perfInsightsName = "datasource-InsightsMetrics"
+  $perfTableName = "datasource-Perf"
 
   # Build DCR JSON (Perf + InsightsMetrics)
   Write-Verbose "Building DCR JSON payload..."
@@ -450,11 +314,7 @@ try {
     Write-Host "DCR ready: $DcrName" -ForegroundColor Green
     Write-Host "DCR Id: $DcrId"
     Write-Host ""
-    #endregion
-  } else {
-    Write-Host "AmaOnly mode enabled: skipping DCR create/update and associations." -ForegroundColor DarkGray
-    Write-Host ""
-  }
+  #endregion
 
   #region Host Pool Association
   # Ensure the desktopvirtualization CLI extension is present
@@ -496,16 +356,12 @@ try {
     }
     Write-Host ""
 
-    $operationTarget = if ($AmaOnly) { "process AMA checks/installs" } else { "associate DCR '$DcrName'" }
+    $operationTarget = "associate DCR '$DcrName'"
 
     if ($WhatIfPreference) {
       Write-Host "[WhatIf] Would prompt to $operationTarget across the above host pool(s)." -ForegroundColor DarkYellow
     } else {
-      if ($AmaOnly) {
-        Write-Host "Process AMA checks/installs for session hosts in:" -ForegroundColor Cyan
-      } else {
-        Write-Host "Associate DCR '$DcrName' with session hosts in:" -ForegroundColor Cyan
-      }
+      Write-Host "Associate DCR '$DcrName' with session hosts in:" -ForegroundColor Cyan
       Write-Host "  [A] All host pools"
       Write-Host "  [S] Select specific host pools"
       Write-Host "  [N] Skip"
@@ -540,10 +396,6 @@ try {
         $totalSuccess = 0
         $totalFail    = 0
         $totalSkipped = 0
-        $amaAlreadyInstalled = 0
-        $amaInstalledNow     = 0
-        $amaInstallFailed    = 0
-        $amaCheckFailed      = 0
         $poolCount    = 0
 
         # Count total VMs for progress
@@ -591,50 +443,6 @@ try {
             $currentVM++
             $vmName = ($vmId -split '/')[-1]
             $assocName = "assoc-$DcrName-$vmName" # Unique per VM
-
-            $vmInfo = Get-VMInfoFromResourceId -ResourceId $vmId
-            if (-not $InstallAma) {
-              Write-Verbose "Skipping AMA check/install for $vmName (use -InstallAma to enable)."
-            } elseif (-not $vmInfo) {
-              Write-Warning "    Unable to parse VM resource ID: $vmId"
-              $amaCheckFailed++
-            } else {
-              Write-Verbose "Checking AMA extension on VM: $($vmInfo.VmName) (RG: $($vmInfo.ResourceGroup))"
-              $osType = Get-VmOsType -VmResourceGroup $vmInfo.ResourceGroup -VmName $vmInfo.VmName
-              if ([string]::IsNullOrWhiteSpace($osType)) {
-                Write-Warning "    Could not determine OS type for VM '$($vmInfo.VmName)'."
-                $amaCheckFailed++
-              } else {
-                $amaExtensionName = if ($osType -eq 'Linux') { 'AzureMonitorLinuxAgent' } else { 'AzureMonitorWindowsAgent' }
-                $isAmaInstalled = Test-AmaExtensionInstalled -VmResourceGroup $vmInfo.ResourceGroup -VmName $vmInfo.VmName -ExtensionName $amaExtensionName
-
-                if ($isAmaInstalled) {
-                  Write-Verbose "    AMA extension already installed ($amaExtensionName)."
-                  $amaAlreadyInstalled++
-                } else {
-                  if ($PSCmdlet.ShouldProcess($vmInfo.VmName, "Install AMA extension '$amaExtensionName'")) {
-                    Write-Host "    AMA extension missing. Installing $amaExtensionName on $($vmInfo.VmName)..." -ForegroundColor Gray
-                    $installResult = Install-AmaExtension -VmResourceGroup $vmInfo.ResourceGroup -VmName $vmInfo.VmName -ExtensionName $amaExtensionName
-                    if ($installResult.Success) {
-                      Write-Verbose "    AMA extension installed successfully on $($vmInfo.VmName)."
-                      $amaInstalledNow++
-                    } else {
-                      Write-Warning "    Failed to install AMA extension on $($vmInfo.VmName)."
-                      if ($installResult.Error) {
-                        Write-Verbose "    AMA install error details: $($installResult.Error)"
-                      }
-                      $amaInstallFailed++
-                    }
-                  } else {
-                    Write-Host "`[WhatIf`] Would install AMA extension '${amaExtensionName}' on '$($vmInfo.VmName)'." -ForegroundColor DarkYellow
-                  }
-                }
-              }
-            }
-
-            if ($AmaOnly) {
-              continue
-            }
 
             if (-not $PSCmdlet.ShouldProcess($vmName, "Associate DCR '$DcrName'")) {
               continue
@@ -698,28 +506,12 @@ try {
         Write-Host ""
         Write-Host "=== Association Summary ===" -ForegroundColor Cyan
         Write-Host "Total Pools Processed: $($selectedPools.Count)"
-        if ($AmaOnly) {
-          Write-Host "DCR association: skipped by parameter (-AmaOnly)" -ForegroundColor DarkGray
-        } else {
-          Write-Host "Successful: $totalSuccess" -ForegroundColor Green
-          if ($totalSkipped -gt 0) {
-            Write-Host "Skipped (already associated): $totalSkipped" -ForegroundColor DarkGray
-          }
-          if ($totalFail -gt 0) {
-            Write-Host "Failed: $totalFail" -ForegroundColor Yellow
-          }
+        Write-Host "Successful: $totalSuccess" -ForegroundColor Green
+        if ($totalSkipped -gt 0) {
+          Write-Host "Skipped (already associated): $totalSkipped" -ForegroundColor DarkGray
         }
-        if (-not $InstallAma) {
-          Write-Host "AMA check/install: skipped (use -InstallAma to enable)" -ForegroundColor DarkGray
-        } else {
-          Write-Host "AMA already installed: $amaAlreadyInstalled" -ForegroundColor DarkGray
-          Write-Host "AMA installed by script: $amaInstalledNow" -ForegroundColor Green
-          if ($amaCheckFailed -gt 0) {
-            Write-Host "AMA check failed: $amaCheckFailed" -ForegroundColor Yellow
-          }
-          if ($amaInstallFailed -gt 0) {
-            Write-Host "AMA install failed: $amaInstallFailed" -ForegroundColor Yellow
-          }
+        if ($totalFail -gt 0) {
+          Write-Host "Failed: $totalFail" -ForegroundColor Yellow
         }
         Write-Host "Duration: $($duration.ToString('mm\:ss'))"
       }
@@ -729,81 +521,9 @@ try {
   #endregion
 
   Write-Host ""
-  if ($AmaOnly) {
-    Write-Host "AmaOnly run completed. DCR operations and associations were not executed." -ForegroundColor DarkGray
-  } else {
-    Write-Host "After 5-15 minutes, you should see data in BOTH tables:"
-    Write-Host "  - InsightsMetrics"
-    Write-Host "  - Perf"
-  }
-
-  #region Next Steps Report
-  if (-not $AmaOnly -and $DcrId -and $DcrId -ne '<WhatIf-DcrId>') {
-    Write-Host ""
-    Write-Host "===============================================================================" -ForegroundColor Cyan
-    Write-Host " NEXT STEPS - Azure Policy for AMA Deployment" -ForegroundColor Cyan
-    Write-Host "===============================================================================" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "To automatically install the Azure Monitor Agent on all session hosts," -ForegroundColor Yellow
-    Write-Host "assign the following built-in Azure Policy:" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  Policy: Configure Windows machines to run Azure Monitor Agent" -ForegroundColor White
-    Write-Host "          and associate them to a Data Collection Rule" -ForegroundColor White
-    Write-Host ""
-    Write-Host "  DCR Resource Id to use as the policy parameter:" -ForegroundColor White
-    Write-Host "  $DcrId" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "Assign the policy at the subscription or resource-group scope that" -ForegroundColor Yellow
-    Write-Host "contains your AVD session hosts." -ForegroundColor Yellow
-    Write-Host "===============================================================================" -ForegroundColor Cyan
-
-    # Generate README_NextSteps.txt
-    $nextStepsFile = Join-Path $PSScriptRoot "README_NextSteps.txt"
-    $nextStepsContent = @"
-================================================================================
- NEXT STEPS - Azure Policy for Azure Monitor Agent (AMA) Deployment
-================================================================================
-
-After running AVD-Insights-Enable-PerfMetricsDCRps1, the Data
-Collection Rule (DCR) has been created and associated with your host pools.
-
-To ensure the Azure Monitor Agent is installed (and stays installed) on every
-session host, assign the following built-in Azure Policy:
-
-  Policy name:
-    Configure Windows machines to run Azure Monitor Agent and associate
-    them to a Data Collection Rule
-
-  Policy definition ID:
-    /providers/Microsoft.Authorization/policyDefinitions/244efd75-0d92-453c-b9a3-7d73ca36ed52
-
-  DCR Resource Id (use as the policy parameter "dcrResourceId"):
-    $DcrId
-
-How to assign in the Azure Portal:
-  1. Go to Azure Policy > Definitions
-  2. Search for "Configure Windows machines to run Azure Monitor Agent"
-  3. Click the policy, then click "Assign"
-  4. Set the scope to the subscription or resource group(s) containing
-     your AVD session hosts
-  5. On the Parameters tab, paste the DCR Resource Id shown above
-  6. On the Remediation tab, check "Create a remediation task" to
-     install AMA on existing VMs
-  7. Review and create the assignment
-
-DCR Details:
-  Name:           $DcrName
-  Resource Group: $DcrRG
-  Location:       $Location
-
-Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC
-================================================================================
-"@
-    $nextStepsContent | Out-File -FilePath $nextStepsFile -Encoding utf8 -Force
-    Write-Host ""
-    Write-Host "Saved: $nextStepsFile" -ForegroundColor Green
-  }
-  #endregion
+  Write-Host "After 5-15 minutes, you should see data in BOTH tables:"
+  Write-Host "  - InsightsMetrics"
+  Write-Host "  - Perf"
 } finally {
   if ($TranscriptPath) {
     try {

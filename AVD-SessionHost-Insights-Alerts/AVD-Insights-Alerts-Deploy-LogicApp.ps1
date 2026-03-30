@@ -100,6 +100,7 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
     - Supports either -SendToEmail (single) or -SendToEmails (multiple recipients).
 #>
 
+[CmdletBinding()]
 param(
     [ValidateNotNullOrEmpty()]
     [string]$SubscriptionId,
@@ -301,7 +302,7 @@ function Set-InsightsAlertsToDetailedOnly {
     Write-Host "All $updated AVD-Insights alert(s) now use detailed-only action group '$DetailedActionGroupName'." -ForegroundColor Green
 }
 
-function Ensure-InsightsAlertsExist {
+function Set-InsightsAlertsIfMissing {
     param(
         [Parameter(Mandatory)][string]$SubscriptionId,
         [Parameter(Mandatory)][string]$ResourceGroupName,
@@ -1168,7 +1169,7 @@ Write-Host "Detailed webhook action group '$DetailedActionGroupName' is configur
 # Bootstrap Insights Alerts
 # =========================
 Write-Step "Ensuring AVD-Insights alerts exist (bootstrap if needed)"
-Ensure-InsightsAlertsExist `
+Set-InsightsAlertsIfMissing `
     -SubscriptionId $SubscriptionId `
     -ResourceGroupName $ResourceGroupName `
     -WorkspaceResourceGroupName $WorkspaceResourceGroupName `

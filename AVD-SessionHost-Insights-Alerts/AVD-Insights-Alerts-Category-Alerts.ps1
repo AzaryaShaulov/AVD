@@ -335,7 +335,6 @@ $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 $alertPrefix     = $config.alertPrefix
 $defaultEvalFreq = $config.defaults.evaluationFrequency
 $defaultWindow   = $config.defaults.windowSize
-$defaultSeverity = $config.defaults.severity
 
 # Flatten all alert definitions from categories
 $allAlerts = @()
