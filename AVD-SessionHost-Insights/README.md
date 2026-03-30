@@ -1,10 +1,10 @@
-# AVD Session Host Insights Scripts Guide
+# AVD Session Host Insights Scripts DCR+Policy Guide
 
 **Last Updated:** March 2026
 
-Production-ready PowerShell scripts that deploy AVD session host performance monitoring foundations and **7 category-based Insights alerts with rich email notifications**.
+This script creates (or updates) a Data Collection Rule (DCR) that captures performance counters (CPU, memory, disk latency, network bandwidth, etc.) from AVD session hosts and routes them to both the InsightsMetrics and Perf tables in a Log Analytics workspace. After creating the DCR, it discovers all AVD host pools in the subscription and interactively lets you associate the DCR with all, selected, or no host pools.
 
-Standard Azure Monitor alert emails usually contain limited context. This workflow builds the monitoring baseline first (DCR plus host associations), then deploys a Logic App webhook pipeline that enriches alert payloads with query results from Log Analytics so operators receive actionable details without digging through multiple portal blades.
+This script enables the  AVD session host Insights performance monitoring foundations and is best used with `AVD-Insights-Alerts-Deploy-LogicApp.ps1`](../AVD-SessionHost-Insights-Alerts/AVD-Insights-Alerts-Deploy-LogicApp.ps1)  webhook pipeline that enriches alert payloads with query results from Log Analytics so operators receive actionable details without digging through multiple portal blades.
 
 ## Prerequisites
 

@@ -1,10 +1,8 @@
-﻿# AVD Insights Alerts
+﻿# AVD Session Host Insights LogicApp Alerts
 
 ## Overview
 
-This solution provides rich performance and session lifecycle alerting for Azure Virtual Desktop with a Logic App webhook email pipeline.
-
-Standard Azure Monitor alert emails typically include minimal context. This implementation re-queries Log Analytics when alerts fire and sends operator-friendly notifications with affected host names, threshold breaches, and troubleshooting details.
+TThis script deploys and configures a Logic App webhook notification pipeline for AVD Insights performance alerts—it creates or updates the Logic App workflow with managed identity, ensures the AVD-Insights-Detailed webhook action group exists, and validates/authorizes the Office 365 API connection for sending email notifications. It then routes Insights performance alerts through the webhook so operators receive detailed email notifications when session host metrics cross alert thresholds.
 
 Signals are sourced from AVD Insights data, including Perf counters, `WVDCheckpoints`, and `WVDAgentHealthStatus`.
 

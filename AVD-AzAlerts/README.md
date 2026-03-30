@@ -1,5 +1,4 @@
-# AVD Alerts Scripts Guide
-
+# AVD  LogicApp email Alerts
 **Last Updated:** March 2026
 
 Production-ready PowerShell scripts that deploy **16 category-based AVD alerts with rich email notifications** — going far beyond what standard Azure Monitor alert emails provide.
