@@ -608,7 +608,7 @@ $Office365ManagedApiId = "/subscriptions/$SubscriptionId/providers/Microsoft.Web
 
 Write-Step "Ensuring Office 365 API connection exists"
 $existingConnectionJson = $null
-$existingConnectionJson = & az resource show --ids $Office365ConnectionResourceId -o json 2>&1
+$existingConnectionJson = & az resource show --ids $Office365ConnectionResourceId -o json 2>&1 | Out-String
 $existingConnectionExitCode = $LASTEXITCODE
 
 if ($existingConnectionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($existingConnectionJson | Out-String))) {
