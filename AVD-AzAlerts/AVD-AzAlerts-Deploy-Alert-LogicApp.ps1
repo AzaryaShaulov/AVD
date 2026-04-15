@@ -608,8 +608,17 @@ $Office365ManagedApiId = "/subscriptions/$SubscriptionId/providers/Microsoft.Web
 
 Write-Step "Ensuring Office 365 API connection exists"
 $existingConnectionJson = $null
-$existingConnectionJson = & az resource show --ids $Office365ConnectionResourceId -o json 2>&1 | Out-String
-$existingConnectionExitCode = $LASTEXITCODE
+$existingConnectionExitCode = 1
+try {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $existingConnectionJson = & az resource show --ids $Office365ConnectionResourceId -o json 2>&1
+    $existingConnectionExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+} catch {
+    $existingConnectionExitCode = 1
+    $ErrorActionPreference = $prevEAP
+}
 
 if ($existingConnectionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($existingConnectionJson | Out-String))) {
     Write-Host "Office 365 connection '$Office365ConnectionName' not found - creating..."
