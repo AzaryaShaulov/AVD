@@ -234,20 +234,24 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($principalId)) {
 }
 
 # Fetch all role assignments at RG scope (inherited from sub/MG included)
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
 $roleAssignmentsJson = az role assignment list `
   --assignee $principalId `
   --scope $rgScope `
   --include-inherited `
   --include-groups `
-  --output json 2>$null
+  --output json 2>&1
+$roleExitCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
 
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($roleAssignmentsJson)) {
+if ($roleExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($roleAssignmentsJson | Out-String))) {
   Write-Host "[Pre-flight] WARNING: Could not retrieve role assignments. Continuing, but ensure you have:" -ForegroundColor Yellow
   Write-Host "  - Microsoft.Insights/scheduledQueryRules/* on RG '$ResourceGroup'" -ForegroundColor Yellow
   Write-Host "  - Microsoft.Insights/actionGroups/* on RG '$ResourceGroup'" -ForegroundColor Yellow
   Write-Host "  - Microsoft.OperationalInsights/workspaces/read on RG '$ResourceGroup'" -ForegroundColor Yellow
 } else {
-  $roleAssignments = $roleAssignmentsJson | ConvertFrom-Json
+  $roleAssignments = ($roleAssignmentsJson | Out-String) | ConvertFrom-Json
   $assignedRoleNames = $roleAssignments | Select-Object -ExpandProperty roleDefinitionName
 
   # Built-in role IDs for programmatic matching (display names can be localised)
@@ -388,14 +392,18 @@ function Test-LawTableAvailable {
   )
 
   $probeQuery = "$TableName | take 1"
+  $prevEAP = $ErrorActionPreference
+  $ErrorActionPreference = "SilentlyContinue"
   $probeOutput = az monitor log-analytics query `
     --workspace $WorkspaceResourceId `
     --analytics-query $probeQuery `
     --timespan "PT1H" `
     --subscription $SubscriptionId `
     -o none 2>&1
+  $probeExitCode = $LASTEXITCODE
+  $ErrorActionPreference = $prevEAP
 
-  if ($LASTEXITCODE -eq 0) {
+  if ($probeExitCode -eq 0) {
     return $true
   }
 
@@ -582,9 +590,13 @@ function New-OrSkip-ScheduledQueryAlert {
       )
       $azCmdArgs += '--action-groups'
       $azCmdArgs += $ActionGroupIds
+      $prevEAP = $ErrorActionPreference
+      $ErrorActionPreference = "SilentlyContinue"
       $output = az @azCmdArgs 2>&1
+      $azExitCode = $LASTEXITCODE
+      $ErrorActionPreference = $prevEAP
       
-      if ($LASTEXITCODE -eq 0) {
+      if ($azExitCode -eq 0) {
         Write-Log "  [OK] Success" "Green"
         $status = "Success"
         $action  = "Created"
@@ -647,9 +659,9 @@ $alertDefinitions = @(
   @{ Name = "AVD-Category-UnknownUnclassified"; Description = "Consolidated unknown or unclassified AVD error symbols for triage."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic == 'Unknown CodeSymbolic - review Message for details.'`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
   # --- WVD Diagnostic Log alerts (require host pool diagnostic settings) ---
   @{ Name = "AVD-Category-ConnectionFailureRate"; Description = "Spike in failed connections per host pool from WVDConnections."; Kql = "WVDConnections`n| where TimeGenerated > ago(15m)`n| where State == 'Failed'`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| summarize FailedCount = count() by HostPool, UserName`n| where FailedCount > 5`n| project HostPool, UserName, FailedCount" },
-  @{ Name = "AVD-Category-DisconnectionSpike"; Description = "Abnormal disconnection rate across session hosts indicating infrastructure or network instability."; Kql = "WVDConnections`n| where TimeGenerated > ago(15m)`n| where State == 'Completed'`n| where ConnectionType == 'Disconnected'`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| summarize DisconnectCount = count() by HostPool, SessionHostName`n| where DisconnectCount > 10`n| project HostPool, SessionHostName, DisconnectCount" },
+  @{ Name = "AVD-Category-DisconnectionSpike"; Description = "Abnormal disconnection rate across session hosts indicating infrastructure or network instability."; Kql = "WVDConnections`n| where TimeGenerated > ago(15m)`n| where State == 'Completed'`n| where column_ifexists('ConnectionType', '') == 'Disconnected' or column_ifexists('IsReconnect', false) == true`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| summarize DisconnectCount = count() by HostPool, SessionHostName`n| where DisconnectCount > 10`n| project HostPool, SessionHostName, DisconnectCount" },
   @{ Name = "AVD-Category-UnhealthyHosts"; Description = "Session hosts reporting non-Available status from WVDAgentHealthStatus."; Kql = "WVDAgentHealthStatus`n| where TimeGenerated > ago(15m)`n| summarize arg_max(TimeGenerated, *) by SessionHostName`n| where Status != 'Available'`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project HostPool, SessionHostName, Status, LastHeartBeat = TimeGenerated" },
-  @{ Name = "AVD-Category-StaleHeartbeat"; Description = "Session hosts with stale agent heartbeat indicating communication failure or zombie hosts."; Kql = "WVDAgentHealthStatus`n| summarize arg_max(TimeGenerated, *) by SessionHostName`n| where TimeGenerated < ago(5m)`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| extend StaleSinceMin = datetime_diff('minute', now(), TimeGenerated)`n| project HostPool, SessionHostName, Status, StaleSinceMin" },
+  @{ Name = "AVD-Category-StaleHeartbeat"; Description = "Session hosts with stale agent heartbeat indicating communication failure or zombie hosts."; Kql = "WVDAgentHealthStatus`n| where TimeGenerated > ago(15m)`n| summarize arg_max(TimeGenerated, *) by SessionHostName`n| where TimeGenerated < ago(5m)`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| extend StaleSinceMin = datetime_diff('minute', now(), TimeGenerated)`n| project HostPool, SessionHostName, Status, StaleSinceMin" },
   @{ Name = "AVD-Category-BandwidthDrop"; Description = "Per-connection estimated bandwidth drops below threshold from WVDConnectionNetworkData."; Kql = "WVDConnectionNetworkData`n| where TimeGenerated > ago(15m)`n| summarize P10BW = percentile(EstAvailableBandwidthKBps, 10) by CorrelationId`n| where P10BW < 500`n| join kind=inner (WVDConnections | where TimeGenerated > ago(15m) | project CorrelationId, UserName, SessionHostName, _ResourceId) on CorrelationId`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project HostPool, UserName, SessionHostName, P10BW_KBps = round(P10BW, 0)" },
   @{ Name = "AVD-Category-RTTPerUser"; Description = "Per-user P95 round-trip time exceeds threshold from WVDConnectionNetworkData."; Kql = "WVDConnectionNetworkData`n| where TimeGenerated > ago(15m)`n| summarize P95RTT = percentile(EstRoundTripTimeInMs, 95) by CorrelationId`n| where P95RTT > 200`n| join kind=inner (WVDConnections | where TimeGenerated > ago(15m) | project CorrelationId, UserName, SessionHostName, _ResourceId) on CorrelationId`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project HostPool, UserName, SessionHostName, P95RTT_ms = round(P95RTT, 0)" },
   @{ Name = "AVD-Category-SignInPhaseDelay"; Description = "Prolonged sign-in phases detected from WVDCheckpoints (profile load, GPO, shell start)."; Kql = "WVDCheckpoints`n| where TimeGenerated > ago(15m)`n| where Source == 'WVDConnections'`n| where Name in ('OnConnected', 'ShellReady', 'LoadProfile', 'ApplyGroupPolicy')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| extend DurationSec = datetime_diff('second', TimeGenerated, todatetime(tostring(Parameters.StartTime)))`n| where DurationSec > 15`n| project HostPool, UserName, Name, DurationSec, SessionHostName = tostring(Parameters.SessionHostName)" },
@@ -730,8 +742,12 @@ if (-not [string]::IsNullOrWhiteSpace($DetailedAgId) -and $existingCount -gt 0) 
     )
     $updateArgs += $ActionGroupIds
 
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
     $updateOutput = az @updateArgs 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $updateExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($updateExitCode -eq 0) {
       Write-Log "Updated action groups on existing alert: $($alertDef.Name)" "Green"
     } else {
       Write-Log "Warning: Failed to update action groups on '$($alertDef.Name)': $updateOutput" "Yellow"
@@ -749,6 +765,7 @@ foreach ($alert in $alertDefinitions) {
   $percentComplete = [Math]::Round(($alertCount / $alertDefinitions.Count) * 100)
   $progressStatus = ('Processing alert {0} of {1}: {2}' -f $alertCount, $alertDefinitions.Count, $alert.Name)
   Write-Progress -Activity 'Creating AVD Alerts (create-only)' -Status $progressStatus -PercentComplete $percentComplete
+  Write-Log ('[{0}/{1}] {2}' -f $alertCount, $alertDefinitions.Count, $alert.Name) "Cyan"
 
   # Status report for WhatIf mode if running longer than 30 seconds
   if ($PSBoundParameters.ContainsKey('WhatIf')) {

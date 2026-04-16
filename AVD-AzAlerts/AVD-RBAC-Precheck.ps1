@@ -110,9 +110,13 @@ function Write-Section {
 
 function Invoke-AzCliJson {
     param([Parameter(Mandatory = $true)][string[]]$CliArguments)
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
     $result = & az @CliArguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI command failed: az $($CliArguments -join ' ')`n$result"
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($exitCode -ne 0) {
+        throw "Azure CLI command failed: az $($CliArguments -join ' ')`n$($result | Out-String)"
     }
     $text = ($result | Out-String).Trim()
     if ([string]::IsNullOrWhiteSpace($text)) {
@@ -123,9 +127,13 @@ function Invoke-AzCliJson {
 
 function Invoke-AzCliText {
     param([Parameter(Mandatory = $true)][string[]]$CliArguments)
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
     $result = & az @CliArguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI command failed: az $($CliArguments -join ' ')`n$result"
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($exitCode -ne 0) {
+        throw "Azure CLI command failed: az $($CliArguments -join ' ')`n$($result | Out-String)"
     }
     return ($result | Out-String).Trim()
 }

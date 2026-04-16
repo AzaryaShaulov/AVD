@@ -1,3 +1,4 @@
+#requires -Version 5.1
 <#
 ==============================================================================
 SCRIPT VERSION: 1.2
@@ -103,28 +104,21 @@ DISCLAIMER: This script is provided AS IS, without warranties or support guarant
 
 [CmdletBinding()]
 param(
-    [ValidateNotNullOrEmpty()]
     [string]$SubscriptionId,
 
-    [ValidateNotNullOrEmpty()]
     [string]$ResourceGroupName,
 
-    [ValidateNotNullOrEmpty()]
     [string]$LogicAppName,
 
-    [ValidateNotNullOrEmpty()]
     [string]$Location,
 
-    [ValidateNotNullOrEmpty()]
     [string]$WorkspaceName,
 
-    [ValidateNotNullOrEmpty()]
     [string]$WorkspaceResourceGroupName,
 
     [string[]]$SendToEmails = @(),
     [string]$SendToEmail = "",
 
-    [ValidateNotNullOrEmpty()]
     [string]$SendFromEmail,
 
     [string]$Office365ConnectionName = "office365",
@@ -174,11 +168,11 @@ function Resolve-Setting {
     )
 
     if (-not [string]::IsNullOrWhiteSpace($Value)) {
-        return $Value
+        return $Value.Trim()
     }
 
     if (-not [string]::IsNullOrWhiteSpace($DefaultValue)) {
-        return $DefaultValue
+        return $DefaultValue.Trim()
     }
 
     throw "Missing required value for '$Name'. Provide it as a parameter or populate the hard-coded defaults and use -UseHardCodedDefaults."
@@ -207,9 +201,14 @@ function Invoke-AzCliJson {
         [string[]]$Arguments
     )
 
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
     $result = & az @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI command failed: az $($Arguments -join ' ')`n$result"
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+
+    if ($exitCode -ne 0) {
+        throw "Azure CLI command failed: az $($Arguments -join ' ')`n$($result | Out-String)"
     }
 
     if ([string]::IsNullOrWhiteSpace(($result | Out-String))) {
@@ -225,9 +224,14 @@ function Invoke-AzCliText {
         [string[]]$Arguments
     )
 
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
     $result = & az @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Azure CLI command failed: az $($Arguments -join ' ')`n$result"
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+
+    if ($exitCode -ne 0) {
+        throw "Azure CLI command failed: az $($Arguments -join ' ')`n$($result | Out-String)"
     }
 
     return ($result | Out-String).Trim()
@@ -266,10 +270,14 @@ function Set-DetailedActionGroupWebhook {
 
     $tmpFile = Join-Path -Path $env:TEMP -ChildPath ("action-group-{0}-{1}.json" -f $ActionGroupName, [guid]::NewGuid().ToString('N'))
     try {
-        $actionGroupBody | ConvertTo-Json -Depth 20 | Set-Content -Path $tmpFile -Encoding utf8
+        $actionGroupBody | ConvertTo-Json -Depth 30 | Set-Content -Path $tmpFile -Encoding utf8
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
         $result = & az rest --method put --uri $actionGroupUri --body "@$tmpFile" -o json 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to create/update action group '$ActionGroupName'`n$result"
+        $azExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($azExitCode -ne 0) {
+            throw "Failed to create/update action group '$ActionGroupName'`n$($result | Out-String)"
         }
     }
     finally {
@@ -320,19 +328,23 @@ function Set-AVDCategoryAlertsToDetailedOnly {
     $updated = 0
     $failed = @()
     foreach ($alertName in $alertNames) {
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
         $updateOutput = & az monitor scheduled-query update `
             --resource-group $ResourceGroupName `
             --name $alertName `
             --subscription $SubscriptionId `
             --action-groups $detailedActionGroupId 2>&1
+        $updateExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
 
-        if ($LASTEXITCODE -eq 0) {
+        if ($updateExitCode -eq 0) {
             $updated++
             Write-Host "Updated '$alertName' to detailed-only action group." -ForegroundColor Gray
         }
         else {
             $failed += $alertName
-            Write-Warning "Failed to update alert '$alertName' to detailed-only action group. $updateOutput"
+            Write-Warning "Failed to update alert '$alertName' to detailed-only action group. $($updateOutput | Out-String)"
         }
     }
 
@@ -396,7 +408,15 @@ function Ensure-AVDCategoryAlertsExist {
         'AVD-Category-PersonalDesktopAssignment',
         'AVD-Category-DeviceGraphicsInput',
         'AVD-Category-FSLogixProfileStorage',
-        'AVD-Category-UnknownUnclassified'
+        'AVD-Category-UnknownUnclassified',
+        'AVD-Category-ConnectionFailureRate',
+        'AVD-Category-DisconnectionSpike',
+        'AVD-Category-UnhealthyHosts',
+        'AVD-Category-StaleHeartbeat',
+        'AVD-Category-BandwidthDrop',
+        'AVD-Category-RTTPerUser',
+        'AVD-Category-SignInPhaseDelay',
+        'AVD-Category-FrameQualityDegradation'
     )
 
     $missingAlertNames = $requiredAlertNames | Where-Object { $existingAlertNames -notcontains $_ }
@@ -442,7 +462,11 @@ function Ensure-AVDCategoryAlertsExist {
             ForEach-Object { $_.Trim() }
     }
 
-    $stillMissing = $requiredAlertNames | Where-Object { $postBootstrapAlertNames -notcontains $_ }
+    # FrameQualityDegradation is a preview alert that may be skipped if the table doesn't exist
+    $optionalAlerts = @('AVD-Category-FrameQualityDegradation')
+    $stillMissing = $requiredAlertNames | Where-Object {
+        $postBootstrapAlertNames -notcontains $_ -and $optionalAlerts -notcontains $_
+    }
     if ($stillMissing.Count -gt 0) {
         throw "Bootstrap completed but required alerts are still missing: $($stillMissing -join ', ')"
     }
@@ -542,13 +566,13 @@ $Office365ConnectionStatus = "Unknown"
 $RoleAssignmentStatus = "Unknown"
 
 Write-Step "Checking Azure CLI login"
-& az account show | Out-Null
+& az account show -o none 2>$null
 if ($LASTEXITCODE -ne 0) {
     throw "Azure CLI is not logged in. Run 'az login' first."
 }
 
 Write-Step "Setting Azure subscription"
-& az account set --subscription $SubscriptionId
+& az account set --subscription $SubscriptionId 2>$null
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to set Azure subscription to $SubscriptionId"
 }
@@ -575,7 +599,7 @@ if ($rgExists -eq "false") {
         $tagArgs = @("--tags") + $flatTags
     }
 
-    & az group create --name $ResourceGroupName --location $Location @tagArgs | Out-Null
+    & az group create --name $ResourceGroupName --location $Location @tagArgs -o none 2>$null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to create resource group $ResourceGroupName"
     }
@@ -632,11 +656,15 @@ if ($existingConnectionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($existin
 
     $connTmpFile = Join-Path -Path $env:TEMP -ChildPath ("office365-connection-{0}.json" -f [guid]::NewGuid().ToString('N'))
     try {
-        $connBody | ConvertTo-Json -Depth 20 | Set-Content -Path $connTmpFile -Encoding utf8
+        $connBody | ConvertTo-Json -Depth 30 | Set-Content -Path $connTmpFile -Encoding utf8
         $connUri = "${Office365ConnectionResourceId}?api-version=2016-06-01"
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
         $connCreateOutput = & az rest --method put --uri $connUri --body "@$connTmpFile" -o json 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to create Office 365 connection '$Office365ConnectionName'`n$connCreateOutput"
+        $connCreateExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($connCreateExitCode -ne 0) {
+            throw "Failed to create Office 365 connection '$Office365ConnectionName'`n$($connCreateOutput | Out-String)"
         }
     }
     finally {
@@ -857,7 +885,7 @@ WVDConnections
 WVDConnections
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where State == 'Completed'
-| where ConnectionType == 'Disconnected'
+| where column_ifexists('ConnectionType', '') == 'Disconnected' or column_ifexists('IsReconnect', false) == true
 | extend HostPool = tostring(split(_ResourceId, '/')[-1])
 | summarize DisconnectCount = count() by HostPool, SessionHostName
 | where DisconnectCount > 10
@@ -1039,7 +1067,7 @@ $alertEmailHtmlExpr = @'
     '<tr><td><b>Workspace GUID</b></td><td>$WorkspaceId</td></tr>',
   '</table>',
 
-  '<h3 style="margin:14px 0 6px 0;">WVDErrors Results</h3>',
+  '<h3 style="margin:14px 0 6px 0;">', coalesce(triggerBody()?['data']?['essentials']?['alertRule'], 'Query'), ' Results</h3>',
   variables('ResultsTableHtml'),
 
   '<h3 style="margin:18px 0 6px 0;">Troubleshooting Resources</h3>',
@@ -1083,6 +1111,14 @@ $regionTimeZoneMap = @{
     'brazilsouth'        = @{ tz = 'E. South America Standard Time';  abbrev = 'BRT' }
     'southafricanorth'   = @{ tz = 'South Africa Standard Time';      abbrev = 'SAST' }
     'uaenorth'           = @{ tz = 'Arabian Standard Time';           abbrev = 'GST' }
+    'italynorth'         = @{ tz = 'W. Europe Standard Time';         abbrev = 'CET' }
+    'polandcentral'      = @{ tz = 'Central European Standard Time';  abbrev = 'CET' }
+    'spaincentral'       = @{ tz = 'Romance Standard Time';           abbrev = 'CET' }
+    'israelcentral'      = @{ tz = 'Israel Standard Time';            abbrev = 'IST' }
+    'qatarcentral'       = @{ tz = 'Arabian Standard Time';           abbrev = 'GST' }
+    'mexicocentral'      = @{ tz = 'Central Standard Time (Mexico)';  abbrev = 'CT' }
+    'newzealandnorth'    = @{ tz = 'New Zealand Standard Time';       abbrev = 'NZST' }
+    'australiacentral'   = @{ tz = 'AUS Eastern Standard Time';       abbrev = 'AEST' }
 }
 
 $locationKey = $Location.ToLowerInvariant().Replace(' ', '')
@@ -1229,6 +1265,9 @@ $workflowDefinition = @{
                     type     = 'ManagedServiceIdentity'
                     audience = 'https://api.loganalytics.io/'
                 }
+            }
+            limit   = @{
+                timeout = 'PT2M'
             }
         }
 
@@ -1395,15 +1434,19 @@ $workflowTempFile = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath
 try {
     $body | ConvertTo-Json -Depth 100 | Set-Content -Path $workflowTempFile -Encoding utf8
 
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
     $deployResult = & az resource create `
         --id $workflowResourceId `
         --api-version 2019-05-01 `
         --is-full-object `
         --properties "@$workflowTempFile" `
         -o json 2>&1
+    $deployExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to deploy Logic App $LogicAppName`n$deployResult"
+    if ($deployExitCode -ne 0) {
+        throw "Failed to deploy Logic App $LogicAppName`n$($deployResult | Out-String)"
     }
 }
 finally {
@@ -1426,13 +1469,27 @@ $principalId = $logicApp.identity.principalId
 Write-Host "Logic App Managed Identity PrincipalId: $principalId"
 
 Write-Step "Assigning Log Analytics Reader to Logic App managed identity"
-& az role assignment create `
-    --assignee-object-id $principalId `
-    --assignee-principal-type ServicePrincipal `
-    --role "Log Analytics Reader" `
-    --scope $WorkspaceResourceId 2>&1
+$roleCreateOutput = $null
+$roleCreateExitCode = 1
+try {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $roleCreateOutput = & az role assignment create `
+        --assignee-object-id $principalId `
+        --assignee-principal-type ServicePrincipal `
+        --role "Log Analytics Reader" `
+        --scope $WorkspaceResourceId 2>&1
+    $roleCreateExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+} catch {
+    $ErrorActionPreference = $prevEAP
+}
 
-if ($LASTEXITCODE -ne 0) {
+if ($roleCreateExitCode -ne 0) {
+    $roleCreateStr = ($roleCreateOutput | Out-String)
+    if ($roleCreateStr -match 'InteractionRequired|login|authentication') {
+        throw "Azure CLI session has expired or requires interactive login. Run 'az login' and retry.`n$roleCreateStr"
+    }
     Write-Warning "Role assignment may already exist or could not be created automatically. Verify that the Logic App managed identity has 'Log Analytics Reader' on: $WorkspaceResourceId"
     $RoleAssignmentStatus = "NeedsVerification"
 }
@@ -1442,12 +1499,22 @@ else {
 }
 
 # Verify role assignment was actually applied
-$verifyRoleJson = & az role assignment list `
-    --assignee-object-id $principalId `
-    --scope $WorkspaceResourceId `
-    --role "Log Analytics Reader" `
-    --query "[0].id" -o tsv 2>&1
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($verifyRoleJson)) {
+$verifyRoleJson = $null
+try {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $verifyRoleJson = & az role assignment list `
+        --assignee-object-id $principalId `
+        --scope $WorkspaceResourceId `
+        --role "Log Analytics Reader" `
+        --query "[0].id" -o tsv 2>&1
+    $verifyExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+} catch {
+    $verifyExitCode = 1
+    $ErrorActionPreference = $prevEAP
+}
+if ($verifyExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($verifyRoleJson | Out-String))) {
     throw "Role assignment verification failed. The Logic App managed identity does not have 'Log Analytics Reader' on: $WorkspaceResourceId. Assign this role manually before the Logic App can query Log Analytics."
 }
 if ($RoleAssignmentStatus -eq "NeedsVerification") {
@@ -1498,8 +1565,9 @@ Set-AVDCategoryAlertsToDetailedOnly `
 Write-Host ""
 Write-Host "Deployment complete." -ForegroundColor Green
 Write-Host ""
-Write-Host "Webhook URL:"
-Write-Host $callbackValue
+$maskedCallbackUrl = if ($callbackValue -match '(https://[^?]+)') { $Matches[1] + '?sig=***' } else { '***' }
+Write-Host "Webhook URL: $maskedCallbackUrl"
+Write-Host "(Full URL stored in CSV report: $CsvPath)"
 Write-Host ""
 Write-Host "Notes:"
 Write-Host "1. The Office 365 API connection '$Office365ConnectionName' is auto-created if missing, but it must be authenticated in Azure Portal."
