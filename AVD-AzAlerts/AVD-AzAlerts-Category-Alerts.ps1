@@ -152,6 +152,21 @@ $ErrorActionPreference = "Stop"
 # Track execution time
 $ScriptStartTime = Get-Date
 
+# ----------------------------
+# Trace log (always-on diagnostic file with millisecond timestamps)
+# ----------------------------
+$traceSubTag = if ($SubscriptionId) { $SubscriptionId.Substring(0,8) } else { 'nosub' }
+$traceDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+$script:TraceLogPath = Join-Path -Path $traceDir `
+  -ChildPath ("avd-alerts-trace-{0}-{1}.log" -f $traceSubTag, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+function Write-Trace {
+  param([string]$Message, [string]$Tag = 'INFO')
+  $line = "{0} [{1}] {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'), $Tag, $Message
+  try { Add-Content -Path $script:TraceLogPath -Value $line -Encoding utf8 -ErrorAction SilentlyContinue } catch {}
+}
+Write-Host "[Trace] Diagnostic log: $script:TraceLogPath" -ForegroundColor DarkGray
+Write-Trace "Script start. PSVersion=$($PSVersionTable.PSVersion) OS=$([System.Environment]::OSVersion.VersionString) User=$env:USER$env:USERNAME"
+
 # Set CSV path default (include subscription ID if specified)
 if (-not $CsvPath) {
   if ($SubscriptionId) {
@@ -359,6 +374,7 @@ function Write-Log {
   param($Message, $Color = "White")
   $timestamp = Get-Date -Format "HH:mm:ss"
   Write-Host "[$timestamp] $Message" -ForegroundColor $Color
+  Write-Trace -Message $Message -Tag 'LOG'
 }
 
 function Test-AlertExists {
@@ -388,33 +404,61 @@ function Test-LawTableAvailable {
     [string]$TableName,
 
     [Parameter(Mandatory = $true)]
-    [string]$SubscriptionId
+    [string]$SubscriptionId,
+
+    [int]$TimeoutSeconds = 30
   )
 
   $probeQuery = "$TableName | take 1"
-  $prevEAP = $ErrorActionPreference
-  $ErrorActionPreference = "SilentlyContinue"
-  $probeOutput = az monitor log-analytics query `
-    --workspace $WorkspaceResourceId `
-    --analytics-query $probeQuery `
-    --timespan "PT1H" `
-    --subscription $SubscriptionId `
-    -o none 2>&1
-  $probeExitCode = $LASTEXITCODE
-  $ErrorActionPreference = $prevEAP
 
-  if ($probeExitCode -eq 0) {
-    return $true
-  }
+  # Run the probe in a background job with a timeout to prevent hanging on slow API responses.
+  try {
+    $_probeWsId  = $WorkspaceResourceId
+    $_probeQuery = $probeQuery
+    $_probeSubId = $SubscriptionId
+    $probeJob = Start-Job -ScriptBlock {
+      $output = az monitor log-analytics query `
+        --workspace ${using:_probeWsId} `
+        --analytics-query ${using:_probeQuery} `
+        --timespan "PT1H" `
+        --subscription ${using:_probeSubId} `
+        -o none 2>&1
+      [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String) }
+    }
 
-  $probeError = ($probeOutput | Out-String)
-  if ($probeError -match "Failed to resolve table or column expression named|Semantic error") {
+    $completed = Wait-Job $probeJob -Timeout $TimeoutSeconds
+
+    if ($null -eq $completed) {
+      Stop-Job $probeJob -ErrorAction SilentlyContinue
+      Remove-Job $probeJob -Force -ErrorAction SilentlyContinue
+      Write-Log "Warning: Table probe for '$TableName' timed out after ${TimeoutSeconds}s. Skipping preview alert." "Yellow"
+      return $false
+    }
+
+    $result = Receive-Job $probeJob -ErrorAction SilentlyContinue
+    Remove-Job $probeJob -Force -ErrorAction SilentlyContinue
+
+    if ($null -eq $result) {
+      Write-Log "Warning: Could not verify table '$TableName'. Skipping preview alert." "Yellow"
+      return $false
+    }
+
+    if ($result.ExitCode -eq 0) {
+      return $true
+    }
+
+    $probeError = $result.Output
+    if ($probeError -match "Failed to resolve table or column expression named|Semantic error") {
+      return $false
+    }
+
+    # Conservative behavior: if probe fails for unknown reasons, skip preview alert to avoid hard failure.
+    Write-Log "Warning: Could not verify table '$TableName'. Skipping preview alert. Details: $probeError" "Yellow"
+    return $false
+  } catch {
+    Write-Log "Warning: Table probe for '$TableName' failed: $($_.Exception.Message). Skipping preview alert." "Yellow"
     return $false
   }
-
-  # Conservative behavior: if probe fails for unknown reasons, skip preview alert to avoid hard failure.
-  Write-Log "Warning: Could not verify table '$TableName'. Skipping preview alert. Details: $probeError" "Yellow"
-  return $false
 }
 
 # ----------------------------
@@ -671,7 +715,10 @@ $alertDefinitions = @(
 # ConnectionGraphicsData is preview and may not exist in every workspace.
 # Skip this single alert gracefully so core deployment can still complete.
 $frameQualityAlertName = "AVD-Category-FrameQualityDegradation"
+Write-Trace "About to probe LAW table 'ConnectionGraphicsData' on workspace '$LawId' (subscription=$($accountInfo.id))" 'PROBE'
+$probeStart = Get-Date
 $hasConnectionGraphicsData = Test-LawTableAvailable -WorkspaceResourceId $LawId -TableName "ConnectionGraphicsData" -SubscriptionId $accountInfo.id
+Write-Trace ("LAW table probe finished. Result={0}, Elapsed={1:N1}s" -f $hasConnectionGraphicsData, ((Get-Date) - $probeStart).TotalSeconds) 'PROBE'
 if (-not $hasConnectionGraphicsData) {
   Write-Log "ConnectionGraphicsData table not found in workspace '$WorkspaceName'. Skipping preview alert '$frameQualityAlertName'." "Yellow"
   $alertDefinitions = @($alertDefinitions | Where-Object { $_.Name -ne $frameQualityAlertName })
@@ -690,9 +737,14 @@ if (-not $hasConnectionGraphicsData) {
 # which itself uses the bulk-query cache or individual API calls as needed.
 $script:alertExistenceMap = @{}
 Write-Log "Verifying existence of all $($alertDefinitions.Count) alerts..." "Cyan"
+Write-Trace "BEGIN existence verification loop. Count=$($alertDefinitions.Count) RG=$ResourceGroup Sub=$($accountInfo.id)" 'VERIFY'
 foreach ($alertDef in $alertDefinitions) {
+  Write-Trace "Checking alert '$($alertDef.Name)'" 'VERIFY'
+  $tCheck = Get-Date
   $script:alertExistenceMap[$alertDef.Name] = Test-AlertExists -AlertName $alertDef.Name
+  Write-Trace ("Checked '{0}' Exists={1} Elapsed={2:N1}s" -f $alertDef.Name, $script:alertExistenceMap[$alertDef.Name], ((Get-Date) - $tCheck).TotalSeconds) 'VERIFY'
 }
+Write-Trace "END existence verification loop." 'VERIFY'
 $existingCount = ($script:alertExistenceMap.Values | Where-Object { $_ -eq $true }).Count
 $newCount = $alertDefinitions.Count - $existingCount
 Write-Log "Verification complete: $existingCount alert(s) already exist, $newCount will be created." "Gray"
@@ -702,6 +754,7 @@ Write-Log ""
 # This prevents drift where alerts created earlier have a different action group attached.
 if (-not [string]::IsNullOrWhiteSpace($DetailedAgId) -and $existingCount -gt 0) {
   Write-Log "Ensuring existing alerts include the configured webhook action group..." "Cyan"
+  Write-Trace "BEGIN action-group sync loop for $existingCount existing alert(s)." 'AGSYNC'
   foreach ($alertDef in $alertDefinitions) {
     if (-not $script:alertExistenceMap[$alertDef.Name]) {
       continue
@@ -712,11 +765,14 @@ if (-not [string]::IsNullOrWhiteSpace($DetailedAgId) -and $existingCount -gt 0) 
       continue
     }
 
+    Write-Trace "AGSYNC.show '$($alertDef.Name)'" 'AGSYNC'
+    $tAg = Get-Date
     $currentAgOutput = az monitor scheduled-query show `
       -g $ResourceGroup `
       -n $alertDef.Name `
       --subscription $accountInfo.id `
       --query "actions.actionGroups[].actionGroupId" -o tsv 2>$null
+    Write-Trace ("AGSYNC.show '{0}' Elapsed={1:N1}s" -f $alertDef.Name, ((Get-Date) - $tAg).TotalSeconds) 'AGSYNC'
 
     $currentActionGroupIds = @()
     if (-not [string]::IsNullOrWhiteSpace($currentAgOutput)) {

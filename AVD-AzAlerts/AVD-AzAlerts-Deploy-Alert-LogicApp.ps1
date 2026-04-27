@@ -268,7 +268,7 @@ function Set-DetailedActionGroupWebhook {
         }
     }
 
-    $tmpFile = Join-Path -Path $env:TEMP -ChildPath ("action-group-{0}-{1}.json" -f $ActionGroupName, [guid]::NewGuid().ToString('N'))
+    $tmpFile = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("action-group-{0}-{1}.json" -f $ActionGroupName, [guid]::NewGuid().ToString('N'))
     try {
         $actionGroupBody | ConvertTo-Json -Depth 30 | Set-Content -Path $tmpFile -Encoding utf8
         $prevEAP = $ErrorActionPreference
@@ -654,7 +654,7 @@ if ($existingConnectionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($existin
         }
     }
 
-    $connTmpFile = Join-Path -Path $env:TEMP -ChildPath ("office365-connection-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $connTmpFile = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("office365-connection-{0}.json" -f [guid]::NewGuid().ToString('N'))
     try {
         $connBody | ConvertTo-Json -Depth 30 | Set-Content -Path $connTmpFile -Encoding utf8
         $connUri = "${Office365ConnectionResourceId}?api-version=2016-06-01"
@@ -1487,10 +1487,15 @@ try {
 
 if ($roleCreateExitCode -ne 0) {
     $roleCreateStr = ($roleCreateOutput | Out-String)
-    if ($roleCreateStr -match 'InteractionRequired|login|authentication') {
+    # Only treat as fatal auth failure when az clearly says re-login is required.
+    # Cloud Shell can emit transient Graph token warnings (e.g. "Timeout waiting
+    # for token from portal. Audience: https://graph.microsoft.com/") even when
+    # the role assignment actually succeeded, so we defer to the verification
+    # step below instead of throwing on any 'authentication' substring.
+    if ($roleCreateStr -match 'AADSTS\d+|InteractionRequired|Please run ''az login''|run `az login`|az login --scope') {
         throw "Azure CLI session has expired or requires interactive login. Run 'az login' and retry.`n$roleCreateStr"
     }
-    Write-Warning "Role assignment may already exist or could not be created automatically. Verify that the Logic App managed identity has 'Log Analytics Reader' on: $WorkspaceResourceId"
+    Write-Warning "Role assignment command returned a non-zero exit code; will verify whether the assignment exists. Output:`n$roleCreateStr"
     $RoleAssignmentStatus = "NeedsVerification"
 }
 else {
