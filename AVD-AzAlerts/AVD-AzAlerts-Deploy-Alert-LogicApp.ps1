@@ -606,11 +606,56 @@ if ($rgExists -eq "false") {
 }
 
 Write-Step "Resolving Log Analytics workspace by workspace name"
-$workspace = Invoke-AzCliJson -Arguments @(
-    "monitor","log-analytics","workspace","show",
-    "--resource-group",$WorkspaceResourceGroupName,
-    "--workspace-name",$WorkspaceName
-)
+Write-Host "DEBUG: ResourceGroupName='$ResourceGroupName' WorkspaceResourceGroupName='$WorkspaceResourceGroupName' WorkspaceName='$WorkspaceName'" -ForegroundColor DarkGray
+
+$workspace = $null
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
+$workspaceShowJson = & az monitor log-analytics workspace show `
+    --resource-group $WorkspaceResourceGroupName `
+    --workspace-name $WorkspaceName `
+    -o json 2>$null
+$workspaceShowExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEAP
+
+if ($workspaceShowExit -eq 0 -and -not [string]::IsNullOrWhiteSpace(($workspaceShowJson | Out-String))) {
+    $workspace = $workspaceShowJson | Out-String | ConvertFrom-Json
+}
+else {
+    Write-Warning "Workspace '$WorkspaceName' was not found in resource group '$WorkspaceResourceGroupName'. Searching the entire subscription by name..."
+
+    $candidatesJson = & az resource list `
+        --resource-type "Microsoft.OperationalInsights/workspaces" `
+        --name $WorkspaceName `
+        -o json 2>$null
+
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace(($candidatesJson | Out-String))) {
+        $candidates = @($candidatesJson | Out-String | ConvertFrom-Json)
+    }
+
+    if ($candidates.Count -eq 0) {
+        throw "Workspace '$WorkspaceName' was not found in subscription '$SubscriptionId'. Verify -WorkspaceName and that you are signed in to the correct tenant/subscription."
+    }
+    elseif ($candidates.Count -gt 1) {
+        $candidateRgs = ($candidates | ForEach-Object { $_.resourceGroup }) -join ', '
+        throw "Workspace name '$WorkspaceName' is ambiguous - found in multiple resource groups: $candidateRgs. Pass the correct -WorkspaceResourceGroupName explicitly."
+    }
+    else {
+        $resolvedRg = $candidates[0].resourceGroup
+        Write-Warning "Auto-resolved workspace '$WorkspaceName' to resource group '$resolvedRg' (you provided '$WorkspaceResourceGroupName'). Continuing with the resolved RG."
+        $WorkspaceResourceGroupName = $resolvedRg
+
+        $workspaceShowJson = & az monitor log-analytics workspace show `
+            --resource-group $WorkspaceResourceGroupName `
+            --workspace-name $WorkspaceName `
+            -o json 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($workspaceShowJson | Out-String))) {
+            throw "Failed to read workspace '$WorkspaceName' even after auto-resolving its resource group to '$WorkspaceResourceGroupName'."
+        }
+        $workspace = $workspaceShowJson | Out-String | ConvertFrom-Json
+    }
+}
 
 if (-not $workspace) {
     throw "Workspace '$WorkspaceName' in resource group '$WorkspaceResourceGroupName' was not found."
