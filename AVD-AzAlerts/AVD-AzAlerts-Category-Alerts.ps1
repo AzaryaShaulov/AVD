@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 ==============================================================================
 SCRIPT VERSION: 1.2
@@ -144,7 +144,14 @@ param(
   [bool]$CreateOnly = $true,
 
   [Parameter(Mandatory = $false)]
-  [string]$CsvPath
+  [string]$CsvPath,
+
+  # G6: when set, every alert's KQL is dry-run via `az monitor log-analytics query`
+  # before the scheduled-query rule is created. Failed queries are skipped instead of
+  # producing a rule that will silently 0-row forever. Adds runtime cost and requires
+  # 'Log Analytics Reader' on the workspace for the caller.
+  [Parameter(Mandatory = $false)]
+  [switch]$ValidateKql
 )
 
 $ErrorActionPreference = "Stop"
@@ -152,11 +159,35 @@ $ErrorActionPreference = "Stop"
 # Track execution time
 $ScriptStartTime = Get-Date
 
+# Load shared constants and helpers (G10). Loaded early so all downstream call sites
+# (action-group creation, KQL builders) can reference $Script:Avd* values.
+$commonPath = Join-Path -Path $PSScriptRoot -ChildPath 'AVD-AzAlerts-Common.ps1'
+if (-not (Test-Path -Path $commonPath)) {
+    throw "Required helper file not found: $commonPath"
+}
+. $commonPath
+
 # ----------------------------
 # Trace log (always-on diagnostic file with millisecond timestamps)
 # ----------------------------
+# B4(b): write trace log to a per-user private directory rather than the shared OS temp dir,
+# so the workspace/subscription identifiers it contains are not exposed to other users on
+# multi-tenant hosts (e.g. Cloud Shell containers).
 $traceSubTag = if ($SubscriptionId) { $SubscriptionId.Substring(0,8) } else { 'nosub' }
-$traceDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+$isWindowsHost = ($IsWindows) -or ($null -eq $IsWindows -and $env:OS -eq 'Windows_NT')
+if ($isWindowsHost) {
+    $traceDirRoot = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [System.IO.Path]::GetTempPath() }
+    $traceDir = Join-Path -Path $traceDirRoot -ChildPath 'AVD-Trace'
+} else {
+    $traceDirRoot = if ($env:HOME) { $env:HOME } else { [System.IO.Path]::GetTempPath() }
+    $traceDir = Join-Path -Path $traceDirRoot -ChildPath '.avd-trace'
+}
+if (-not (Test-Path -LiteralPath $traceDir)) {
+    try { New-Item -ItemType Directory -Path $traceDir -Force | Out-Null } catch {
+        # Fall back to OS temp if the preferred dir cannot be created (e.g. read-only HOME).
+        $traceDir = [System.IO.Path]::GetTempPath()
+    }
+}
 $script:TraceLogPath = Join-Path -Path $traceDir `
   -ChildPath ("avd-alerts-trace-{0}-{1}.log" -f $traceSubTag, (Get-Date -Format 'yyyyMMdd-HHmmss'))
 function Write-Trace {
@@ -504,7 +535,7 @@ Write-Log "Detailed Webhook URL: $DetailedResultsWebhookUrl" "Cyan"
         'monitor', 'action-group', 'create',
         '-g', $ResourceGroup, '-n', $DetailedActionGroupName,
         '--subscription', $accountInfo.id,
-        '--short-name', 'AVDDetl',
+        '--short-name', $Script:AvdActionGroupShortName,
         '--action', 'webhook', $DetailedWebhookReceiverName, ('"' + $DetailedResultsWebhookUrl + '"')
       )
       if ($UseCommonAlertSchemaForWebhook) {
@@ -590,7 +621,7 @@ Write-Log "Using detailed webhook action group routing." "Cyan"
 # ----------------------------
 # Helper: create scheduled query alert only (skip if exists)
 # ----------------------------
-function New-OrSkip-ScheduledQueryAlert {
+function New-AvdScheduledQueryAlert {
   [CmdletBinding(SupportsShouldProcess)]
   param(
     [Parameter(Mandatory)][string]$AlertName,
@@ -598,13 +629,8 @@ function New-OrSkip-ScheduledQueryAlert {
     [Parameter(Mandatory)][string]$Description
   )
 
-  $severityText = switch ($Severity) {
-    0 { "Critical" }
-    1 { "Error" }
-    2 { "Warning" }
-    3 { "Informational" }
-    4 { "Verbose" }
-  }
+  # B7: source severity label from the shared helper to avoid drift across scripts.
+  $severityText = Get-AvdSeverityText -Severity $Severity
 
   # Check if alert already exists
   $alertExists = Test-AlertExists -AlertName $AlertName
@@ -617,7 +643,32 @@ function New-OrSkip-ScheduledQueryAlert {
     Write-Log "Create-only mode: skipping existing alert: $AlertName" "Gray"
     $status = "Skipped"
     $action  = "Skipped"
-  } elseif ($PSCmdlet.ShouldProcess($AlertName, "Create scheduled query alert")) {
+  } elseif ($PSCmdlet.ShouldProcess($AlertName, "Create scheduled query alert")) {    # G6: optional KQL dry-run before rule creation.
+    if ($ValidateKql) {
+      $validateQuery = $Kql -replace "`r", "" -replace "`n", " "
+      Write-Trace "Validating KQL for $AlertName via az monitor log-analytics query" 'VALIDATE'
+      $prevEAP = $ErrorActionPreference
+      $ErrorActionPreference = "SilentlyContinue"
+      $validateOutput = az monitor log-analytics query `
+        --workspace $LawId `
+        --analytics-query $validateQuery `
+        --timespan "PT15M" `
+        --subscription $accountInfo.id `
+        -o none 2>&1
+      $validateExit = $LASTEXITCODE
+      $ErrorActionPreference = $prevEAP
+      if ($validateExit -ne 0) {
+        Write-Log "  [SKIP] KQL validation failed for $AlertName; not creating rule. Output: $($validateOutput | Out-String)" "Yellow"
+        $script:AlertResults += [pscustomobject]@{
+          AlertName   = $AlertName
+          Description = $Description
+          Severity    = "$Severity ($severityText)"
+          Action      = "Skipped"
+          Status      = "KqlValidationFailed"
+        }
+        return
+      }
+    }
     Write-Log "Creating new alert: $AlertName (Severity: $severityText)" "Cyan"
 
     try {
@@ -691,25 +742,39 @@ Write-Log ""
 $alertProcessingStart = Get-Date
 $lastStatusReport = $alertProcessingStart
 
+# ----------------------------
+# Client / connection enrichment fragments (shared across user-facing alert KQL)
+# ----------------------------
+# Common module is dot-sourced near the top of the script (G10).
+$MinSupportedClientVersion = $Script:AvdMinSupportedClientVersion
+
+# KQL `let` block, single-line form for embedding in scheduled-query rule bodies.
+# Uses ago(15m) instead of {0}/{1} placeholders.
+$ConnEnrichmentLet = (Get-AvdConnEnrichmentLet -UseAgo15m) -replace "`r?`n", ' '
+
+# Tail used by all WVDErrors-based alerts to enrich rows with client/gateway/geo context.
+# B1 fix: cast CorrelationId to string on the WVDErrors side.
+$ErrorEnrichTail = "| extend CorrelationId = tostring(column_ifexists('CorrelationId', '')) | lookup kind=leftouter ConnEnrichment on CorrelationId | project UserName, Source, CodeSymbolic, Message, Operation, HostPool, ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry, ClientOS, ClientType, ClientVersion"
+
 # Alert definitions
 $alertDefinitions = @(
-  @{ Name = "AVD-Category-AuthenticationIdentity"; Description = "Consolidated authentication and identity failures in AVD."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('PasswordMustChange', 'PasswordExpired', 'InvalidAuthToken', 'InvalidCredentials', 'AccountLockedOut', 'AccountDisabled', 'LogonFailed', 'AuthenticationLogonFailed', 'NoAuthenticatingAuthority', 'LocalSecurityAuthorityError')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
-  @{ Name = "AVD-Category-AuthorizationPolicy"; Description = "Consolidated authorization and logon rights failures in AVD."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ConnectionFailedUserNotAuthorized', 'LogonTypeNotGranted', 'NotAuthorizedForLogon')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
-  @{ Name = "AVD-Category-ConnectionNetworkGateway"; Description = "Consolidated AVD client, DNS, reverse connect, and gateway transport failures."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('Client', 'DnsLookupFailed', 'GatewayServerNotFound', 'ReverseConnectDnsLookupFailed', 'ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
-  @{ Name = "AVD-Category-SessionHostHealthCapacity"; Description = "Consolidated session host availability and capacity issues."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ConnectionFailedNoHealthyRdshAvailable', 'SessionHostResourceNotAvailable', 'OutOfMemory')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
-  @{ Name = "AVD-Category-PersonalDesktopAssignment"; Description = "Consolidated personal desktop assignment and startup failures."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ConnectionFailedPersonalDesktopFailedToBeStarted', 'ConnectionFailedNoPreAssignedPersonalDesktopForUser')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
-  @{ Name = "AVD-Category-DeviceGraphicsInput"; Description = "Consolidated input and graphics subsystem failures."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('GetInputDeviceHandlesError', 'GraphicsCapsNotReceived', 'GraphicsSubsystemFailed', 'DWMProcessAccessFailure')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
-  @{ Name = "AVD-Category-FSLogixProfileStorage"; Description = "Consolidated FSLogix profile and storage attach/detach/access issues."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ERROR_SHARING_VIOLATION', 'UnloadWaitingForUserAction', 'ERROR_ACCESS_DENIED', 'ERROR_PATH_NOT_FOUND', 'ERROR_FILE_NOT_FOUND', 'ERROR_BAD_NETPATH', 'ERROR_BAD_NET_NAME', 'ERROR_NETNAME_DELETED', 'ERROR_DISK_FULL', 'ERROR_LOCK_VIOLATION') or Source has 'fslogix' or Message has_any ('frxsvc', 'frxshell', 'temporary profile', 'default profile', 'profile failed', 'vhd attach', 'vhdx attach', 'container attach', 'container detach', 'odfc')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
-  @{ Name = "AVD-Category-UnknownUnclassified"; Description = "Consolidated unknown or unclassified AVD error symbols for triage."; Kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic == 'Unknown CodeSymbolic - review Message for details.'`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool" },
+  @{ Name = "AVD-Category-AuthenticationIdentity"; Description = "Consolidated authentication and identity failures in AVD."; Kql = "$ConnEnrichmentLet WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('PasswordMustChange', 'PasswordExpired', 'InvalidAuthToken', 'InvalidCredentials', 'AccountLockedOut', 'AccountDisabled', 'LogonFailed', 'AuthenticationLogonFailed', 'NoAuthenticatingAuthority', 'LocalSecurityAuthorityError')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n$ErrorEnrichTail" },
+  @{ Name = "AVD-Category-AuthorizationPolicy"; Description = "Consolidated authorization and logon rights failures in AVD."; Kql = "$ConnEnrichmentLet WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ConnectionFailedUserNotAuthorized', 'LogonTypeNotGranted', 'NotAuthorizedForLogon')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n$ErrorEnrichTail" },
+  @{ Name = "AVD-Category-ConnectionNetworkGateway"; Description = "Consolidated AVD client, DNS, reverse connect, and gateway transport failures."; Kql = "$ConnEnrichmentLet WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('Client', 'DnsLookupFailed', 'GatewayServerNotFound', 'ReverseConnectDnsLookupFailed', 'ConnectionFailedClientConnectedTooLateReverseConnectionAlreadyClosed')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n$ErrorEnrichTail" },
+  @{ Name = "AVD-Category-SessionHostHealthCapacity"; Description = "Consolidated session host availability and capacity issues."; Kql = "$ConnEnrichmentLet WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ConnectionFailedNoHealthyRdshAvailable', 'SessionHostResourceNotAvailable', 'OutOfMemory')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n$ErrorEnrichTail" },
+  @{ Name = "AVD-Category-PersonalDesktopAssignment"; Description = "Consolidated personal desktop assignment and startup failures."; Kql = "$ConnEnrichmentLet WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ConnectionFailedPersonalDesktopFailedToBeStarted', 'ConnectionFailedNoPreAssignedPersonalDesktopForUser')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n$ErrorEnrichTail" },
+  @{ Name = "AVD-Category-DeviceGraphicsInput"; Description = "Consolidated input and graphics subsystem failures."; Kql = "$ConnEnrichmentLet WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('GetInputDeviceHandlesError', 'GraphicsCapsNotReceived', 'GraphicsSubsystemFailed', 'DWMProcessAccessFailure')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n$ErrorEnrichTail" },
+  @{ Name = "AVD-Category-FSLogixProfileStorage"; Description = "Consolidated FSLogix profile and storage attach/detach/access issues."; Kql = "$ConnEnrichmentLet WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic in ('ERROR_SHARING_VIOLATION', 'UnloadWaitingForUserAction', 'ERROR_ACCESS_DENIED', 'ERROR_PATH_NOT_FOUND', 'ERROR_FILE_NOT_FOUND', 'ERROR_BAD_NETPATH', 'ERROR_BAD_NET_NAME', 'ERROR_NETNAME_DELETED', 'ERROR_DISK_FULL', 'ERROR_LOCK_VIOLATION') or Source has 'fslogix' or Message has_any ('frxsvc', 'frxshell', 'temporary profile', 'default profile', 'profile failed', 'vhd attach', 'vhdx attach', 'container attach', 'container detach', 'odfc')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n$ErrorEnrichTail" },
+  @{ Name = "AVD-Category-UnknownUnclassified"; Description = "Consolidated unknown or unclassified AVD error symbols for triage."; Kql = "$ConnEnrichmentLet WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic == 'Unknown CodeSymbolic - review Message for details.'`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n$ErrorEnrichTail" },
   # --- WVD Diagnostic Log alerts (require host pool diagnostic settings) ---
-  @{ Name = "AVD-Category-ConnectionFailureRate"; Description = "Spike in failed connections per host pool from WVDConnections."; Kql = "WVDConnections`n| where TimeGenerated > ago(15m)`n| where State == 'Failed'`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| summarize FailedCount = count() by HostPool, UserName`n| where FailedCount > 5`n| project HostPool, UserName, FailedCount" },
-  @{ Name = "AVD-Category-DisconnectionSpike"; Description = "Abnormal disconnection rate across session hosts indicating infrastructure or network instability."; Kql = "WVDConnections`n| where TimeGenerated > ago(15m)`n| where State == 'Completed'`n| where column_ifexists('ConnectionType', '') == 'Disconnected' or column_ifexists('IsReconnect', false) == true`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| summarize DisconnectCount = count() by HostPool, SessionHostName`n| where DisconnectCount > 10`n| project HostPool, SessionHostName, DisconnectCount" },
+  @{ Name = "AVD-Category-ConnectionFailureRate"; Description = "Spike in failed connections per host pool from WVDConnections."; Kql = "let MinSupportedClient = '$MinSupportedClientVersion'; WVDConnections`n| where TimeGenerated > ago(15m)`n| where State == 'Failed'`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| extend Geo = geo_info_from_ip_address(ClientIPAddress)`n| extend ClientCity = tostring(Geo.city), ClientState = tostring(Geo.state), ClientCountry = tostring(Geo.country)`n| extend ClientVersionDisplay = case(isempty(ClientVersion), '(unknown)', isnull(parse_version(ClientVersion)), ClientVersion, parse_version(ClientVersion) < parse_version(MinSupportedClient), strcat(ClientVersion, ' (outdated)'), ClientVersion)`n| summarize FailedCount = count(), ClientIPAddress = any(ClientIPAddress), GatewayRegion = any(GatewayRegion), ClientCity = any(ClientCity), ClientState = any(ClientState), ClientCountry = any(ClientCountry), ClientOS = any(ClientOS), ClientType = any(ClientType), ClientVersion = any(ClientVersionDisplay) by HostPool, UserName`n| where FailedCount > 5`n| project HostPool, UserName, FailedCount, ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry, ClientOS, ClientType, ClientVersion" },
+  @{ Name = "AVD-Category-DisconnectionSpike"; Description = "Abnormal disconnection rate across session hosts indicating infrastructure or network instability."; Kql = "let MinSupportedClient = '$MinSupportedClientVersion'; WVDConnections`n| where TimeGenerated > ago(15m)`n| where State == 'Completed'`n| where column_ifexists('ConnectionType', '') == 'Disconnected' or column_ifexists('IsReconnect', false) == true`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| extend Geo = geo_info_from_ip_address(ClientIPAddress)`n| extend ClientCity = tostring(Geo.city), ClientState = tostring(Geo.state), ClientCountry = tostring(Geo.country)`n| extend ClientVersionDisplay = case(isempty(ClientVersion), '(unknown)', isnull(parse_version(ClientVersion)), ClientVersion, parse_version(ClientVersion) < parse_version(MinSupportedClient), strcat(ClientVersion, ' (outdated)'), ClientVersion)`n| summarize DisconnectCount = count(), UserName = any(UserName), ClientIPAddress = any(ClientIPAddress), GatewayRegion = any(GatewayRegion), ClientCity = any(ClientCity), ClientState = any(ClientState), ClientCountry = any(ClientCountry), ClientOS = any(ClientOS), ClientType = any(ClientType), ClientVersion = any(ClientVersionDisplay) by HostPool, SessionHostName`n| where DisconnectCount > 10`n| project HostPool, SessionHostName, DisconnectCount, UserName, ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry, ClientOS, ClientType, ClientVersion" },
   @{ Name = "AVD-Category-UnhealthyHosts"; Description = "Session hosts reporting non-Available status from WVDAgentHealthStatus."; Kql = "WVDAgentHealthStatus`n| where TimeGenerated > ago(15m)`n| summarize arg_max(TimeGenerated, *) by SessionHostName`n| where Status != 'Available'`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project HostPool, SessionHostName, Status, LastHeartBeat = TimeGenerated" },
   @{ Name = "AVD-Category-StaleHeartbeat"; Description = "Session hosts with stale agent heartbeat indicating communication failure or zombie hosts."; Kql = "WVDAgentHealthStatus`n| where TimeGenerated > ago(15m)`n| summarize arg_max(TimeGenerated, *) by SessionHostName`n| where TimeGenerated < ago(5m)`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| extend StaleSinceMin = datetime_diff('minute', now(), TimeGenerated)`n| project HostPool, SessionHostName, Status, StaleSinceMin" },
-  @{ Name = "AVD-Category-BandwidthDrop"; Description = "Per-connection estimated bandwidth drops below threshold from WVDConnectionNetworkData."; Kql = "WVDConnectionNetworkData`n| where TimeGenerated > ago(15m)`n| summarize P10BW = percentile(EstAvailableBandwidthKBps, 10) by CorrelationId`n| where P10BW < 500`n| join kind=inner (WVDConnections | where TimeGenerated > ago(15m) | project CorrelationId, UserName, SessionHostName, _ResourceId) on CorrelationId`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project HostPool, UserName, SessionHostName, P10BW_KBps = round(P10BW, 0)" },
-  @{ Name = "AVD-Category-RTTPerUser"; Description = "Per-user P95 round-trip time exceeds threshold from WVDConnectionNetworkData."; Kql = "WVDConnectionNetworkData`n| where TimeGenerated > ago(15m)`n| summarize P95RTT = percentile(EstRoundTripTimeInMs, 95) by CorrelationId`n| where P95RTT > 200`n| join kind=inner (WVDConnections | where TimeGenerated > ago(15m) | project CorrelationId, UserName, SessionHostName, _ResourceId) on CorrelationId`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project HostPool, UserName, SessionHostName, P95RTT_ms = round(P95RTT, 0)" },
-  @{ Name = "AVD-Category-SignInPhaseDelay"; Description = "Prolonged sign-in phases detected from WVDCheckpoints (profile load, GPO, shell start)."; Kql = "WVDCheckpoints`n| where TimeGenerated > ago(15m)`n| where Source == 'WVDConnections'`n| where Name in ('OnConnected', 'ShellReady', 'LoadProfile', 'ApplyGroupPolicy')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| extend DurationSec = datetime_diff('second', TimeGenerated, todatetime(tostring(Parameters.StartTime)))`n| where DurationSec > 15`n| project HostPool, UserName, Name, DurationSec, SessionHostName = tostring(Parameters.SessionHostName)" },
-  @{ Name = "AVD-Category-FrameQualityDegradation"; Description = "[Preview] End-to-end frame delay or dropped frames exceeding threshold from ConnectionGraphicsData."; Kql = "ConnectionGraphicsData`n| where TimeGenerated > ago(15m)`n| summarize AvgFrameDelay = avg(EstEndToEndDelayInMs), DropPct = avg(FramesSkippedPercentage) by CorrelationId`n| where AvgFrameDelay > 300 or DropPct > 15`n| join kind=inner (WVDConnections | where TimeGenerated > ago(15m) | project CorrelationId, UserName, SessionHostName, _ResourceId) on CorrelationId`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project HostPool, UserName, SessionHostName, AvgFrameDelay_ms = round(AvgFrameDelay, 0), DroppedFramesPct = round(DropPct, 1)" }
+  @{ Name = "AVD-Category-BandwidthDrop"; Description = "Per-connection estimated bandwidth drops below threshold from WVDConnectionNetworkData."; Kql = "$ConnEnrichmentLet WVDConnectionNetworkData`n| where TimeGenerated > ago(15m)`n| summarize P10BW = percentile(EstAvailableBandwidthKBps, 10) by CorrelationId`n| where P10BW < 500`n| join kind=inner (WVDConnections | where TimeGenerated > ago(15m) | project CorrelationId, UserName, _ResourceId) on CorrelationId`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| lookup kind=leftouter ConnEnrichment on CorrelationId`n| project HostPool, UserName, SessionHostName = ClientSessionHost, P10BW_KBps = round(P10BW, 0), ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry, ClientOS, ClientType, ClientVersion" },
+  @{ Name = "AVD-Category-RTTPerUser"; Description = "Per-user P95 round-trip time exceeds threshold from WVDConnectionNetworkData."; Kql = "$ConnEnrichmentLet WVDConnectionNetworkData`n| where TimeGenerated > ago(15m)`n| summarize P95RTT = percentile(EstRoundTripTimeInMs, 95) by CorrelationId`n| where P95RTT > 200`n| join kind=inner (WVDConnections | where TimeGenerated > ago(15m) | project CorrelationId, UserName, _ResourceId) on CorrelationId`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| lookup kind=leftouter ConnEnrichment on CorrelationId`n| project HostPool, UserName, SessionHostName = ClientSessionHost, P95RTT_ms = round(P95RTT, 0), ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry, ClientOS, ClientType, ClientVersion" },
+  @{ Name = "AVD-Category-SignInPhaseDelay"; Description = "Prolonged sign-in phases detected from WVDCheckpoints (profile load, GPO, shell start)."; Kql = "$ConnEnrichmentLet WVDCheckpoints`n| where TimeGenerated > ago(15m)`n| where Source == 'WVDConnections'`n| where Name in ('OnConnected', 'ShellReady', 'LoadProfile', 'ApplyGroupPolicy')`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| extend DurationSec = datetime_diff('second', TimeGenerated, todatetime(tostring(Parameters.StartTime)))`n| where DurationSec > 15`n| extend CorrelationId = tostring(column_ifexists('CorrelationId', ''))`n| lookup kind=leftouter ConnEnrichment on CorrelationId`n| project HostPool, UserName, Name, DurationSec, SessionHostName = coalesce(tostring(Parameters.SessionHostName), ClientSessionHost), ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry, ClientOS, ClientType, ClientVersion" },
+  @{ Name = "AVD-Category-FrameQualityDegradation"; Description = "[Preview] End-to-end frame delay or dropped frames exceeding threshold from ConnectionGraphicsData."; Kql = "$ConnEnrichmentLet ConnectionGraphicsData`n| where TimeGenerated > ago(15m)`n| summarize AvgFrameDelay = avg(EstEndToEndDelayInMs), DropPct = avg(FramesSkippedPercentage) by CorrelationId`n| where AvgFrameDelay > 300 or DropPct > 15`n| join kind=inner (WVDConnections | where TimeGenerated > ago(15m) | project CorrelationId, UserName, _ResourceId) on CorrelationId`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| lookup kind=leftouter ConnEnrichment on CorrelationId`n| project HostPool, UserName, SessionHostName = ClientSessionHost, AvgFrameDelay_ms = round(AvgFrameDelay, 0), DroppedFramesPct = round(DropPct, 1), ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry, ClientOS, ClientType, ClientVersion" }
 )
 
 # ConnectionGraphicsData is preview and may not exist in every workspace.
@@ -726,7 +791,9 @@ if (-not $hasConnectionGraphicsData) {
   $script:AlertResults += [pscustomobject]@{
     AlertName   = $frameQualityAlertName
     Description = "[Preview] End-to-end frame delay or dropped frames exceeding threshold from ConnectionGraphicsData."
-    Severity    = "$Severity ($severityText)"
+    # A1: $severityText is function-local in New-AvdScheduledQueryAlert; here in script
+    # scope use the shared helper directly to avoid emitting an empty parenthesis.
+    Severity    = "$Severity ($(Get-AvdSeverityText -Severity $Severity))"
     Action      = "Skipped"
     Status      = "Skipped"
   }
@@ -847,7 +914,7 @@ foreach ($alert in $alertDefinitions) {
     $kql = "WVDErrors`n| where TimeGenerated > ago(15m)`n| where CodeSymbolic == '$($alert.CodeSymbolic)'`n| extend HostPool = tostring(split(_ResourceId, '/')[-1])`n| project UserName, Source, CodeSymbolic, Message, Operation, HostPool"
   }
 
-  New-OrSkip-ScheduledQueryAlert -AlertName $alert.Name -Description $alert.Description -Kql $kql
+  New-AvdScheduledQueryAlert -AlertName $alert.Name -Description $alert.Description -Kql $kql
 }
 
 Write-Progress -Activity 'Creating AVD Alerts (create-only)' -Completed

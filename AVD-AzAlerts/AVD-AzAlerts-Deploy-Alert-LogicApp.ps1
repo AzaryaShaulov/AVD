@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 ==============================================================================
 SCRIPT VERSION: 1.2
@@ -126,11 +126,28 @@ param(
     [string]$DetailedWebhookReceiverName = "AVDAlertsDetailedWebhook",
     [string]$CsvPath = "",
     [hashtable]$Tags = @{},
-    [switch]$UseHardCodedDefaults
+    [switch]$UseHardCodedDefaults,
+
+    # S1: by default the CSV report stores a masked Logic App webhook URL (signature redacted).
+    # Set this switch to record the full URL including the SAS signature (treat the CSV as a secret).
+    [switch]$IncludeFullCallbackUrl
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptStartTime = Get-Date
+
+# B3(c): script-scope tracker for temp files plus a trap that removes any pending
+# files if an unhandled error escapes a try/finally. Does NOT protect against
+# SIGKILL/process abort (intentionally accepted residual risk).
+$script:TempFilesToCleanup = New-Object System.Collections.Generic.List[string]
+trap {
+    foreach ($_pendingFile in $script:TempFilesToCleanup) {
+        if ($_pendingFile -and (Test-Path -LiteralPath $_pendingFile)) {
+            Remove-Item -LiteralPath $_pendingFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+    continue
+}
 
 # =========================
 # OPTIONAL HARDCODED DEFAULTS
@@ -269,6 +286,7 @@ function Set-DetailedActionGroupWebhook {
     }
 
     $tmpFile = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("action-group-{0}-{1}.json" -f $ActionGroupName, [guid]::NewGuid().ToString('N'))
+    $script:TempFilesToCleanup.Add($tmpFile) | Out-Null
     try {
         $actionGroupBody | ConvertTo-Json -Depth 30 | Set-Content -Path $tmpFile -Encoding utf8
         $prevEAP = $ErrorActionPreference
@@ -355,7 +373,7 @@ function Set-AVDCategoryAlertsToDetailedOnly {
     Write-Host "All $updated AVD-Category alert(s) now use detailed-only action group '$DetailedActionGroupName'." -ForegroundColor Green
 }
 
-function Ensure-AVDCategoryAlertsExist {
+function Confirm-AVDCategoryAlertsExist {
     param(
         [Parameter(Mandatory = $true)]
         [string]$SubscriptionId,
@@ -420,9 +438,13 @@ function Ensure-AVDCategoryAlertsExist {
     )
 
     $missingAlertNames = $requiredAlertNames | Where-Object { $existingAlertNames -notcontains $_ }
+    # B1(a): always invoke the Category script - it is the single owner of the action group
+    # and idempotently skips existing alerts when -CreateOnly $true. Doing so removes the
+    # double-write race vs. a separate Set-DetailedActionGroupWebhook PUT.
     if ($missingAlertNames.Count -eq 0) {
-        Write-Host "All required AVD-Category alerts already exist; bootstrap creation is not required." -ForegroundColor Gray
-        return
+        Write-Host "All required AVD-Category alerts already exist; still invoking Category script idempotently to ensure action group + webhook are configured." -ForegroundColor Gray
+    } else {
+        Write-Host "Detected $($missingAlertNames.Count) missing AVD-Category alert(s). Bootstrapping core alerts via AVD-AzAlerts-Category-Alerts.ps1..." -ForegroundColor Yellow
     }
 
     $coreAlertsScriptPath = Join-Path -Path $PSScriptRoot -ChildPath "AVD-AzAlerts-Category-Alerts.ps1"
@@ -430,21 +452,26 @@ function Ensure-AVDCategoryAlertsExist {
         throw "Could not find AVD-AzAlerts-Category-Alerts.ps1 at '$coreAlertsScriptPath'."
     }
 
-    Write-Host "Detected $($missingAlertNames.Count) missing AVD-Category alert(s). Bootstrapping core alerts via AVD-AzAlerts-Category-Alerts.ps1..." -ForegroundColor Yellow
-
-    & $coreAlertsScriptPath `
-        -SubscriptionId $SubscriptionId `
-        -ResourceGroup $ResourceGroupName `
-        -WorkspaceResourceGroupName $WorkspaceResourceGroupName `
-        -WorkspaceName $WorkspaceName `
-        -Location $Location `
-        -DetailedActionGroupName $DetailedActionGroupName `
-        -DetailedWebhookReceiverName $DetailedWebhookReceiverName `
-        -DetailedResultsWebhookUrl $DetailedResultsWebhookUrl `
-        -CreateOnly $true
-
+    # B4: $ErrorActionPreference is 'Stop' globally, so a child-script terminating error
+    # will jump out before $LASTEXITCODE is read. Wrap in try/catch so we surface a clear
+    # bootstrap-context message.
+    try {
+        & $coreAlertsScriptPath `
+            -SubscriptionId $SubscriptionId `
+            -ResourceGroup $ResourceGroupName `
+            -WorkspaceResourceGroupName $WorkspaceResourceGroupName `
+            -WorkspaceName $WorkspaceName `
+            -Location $Location `
+            -DetailedActionGroupName $DetailedActionGroupName `
+            -DetailedWebhookReceiverName $DetailedWebhookReceiverName `
+            -DetailedResultsWebhookUrl $DetailedResultsWebhookUrl `
+            -CreateOnly $true
+    }
+    catch {
+        throw "Bootstrap alert creation via AVD-AzAlerts-Category-Alerts.ps1 failed: $($_.Exception.Message)"
+    }
     if ($LASTEXITCODE -ne 0) {
-        throw "Bootstrap alert creation via AVD-AzAlerts-Category-Alerts.ps1 failed."
+        throw "Bootstrap alert creation via AVD-AzAlerts-Category-Alerts.ps1 returned exit code $LASTEXITCODE."
     }
 
     $postBootstrapOutput = Invoke-AzCliText -Arguments @(
@@ -540,6 +567,22 @@ $ResolvedSendToEmails = @(
 if ($ResolvedSendToEmails.Count -eq 0) {
     throw "No valid recipients were resolved from 'SendToEmails' or 'SendToEmail'."
 }
+
+# S3: validate every recipient against a strict regex and cap the list size to prevent abuse
+# (e.g. a tampered config flooding email infrastructure). Limits come from the shared module.
+$invalidRecipients = @($ResolvedSendToEmails | Where-Object { $_ -notmatch $Script:AvdEmailRegex })
+if ($invalidRecipients.Count -gt 0) {
+    throw "One or more recipients are not valid email addresses: $($invalidRecipients -join ', ')"
+}
+if ($ResolvedSendToEmails.Count -gt $Script:AvdMaxRecipients) {
+    throw "Recipient count $($ResolvedSendToEmails.Count) exceeds the maximum allowed ($($Script:AvdMaxRecipients)). Reduce 'SendToEmails' or raise AvdMaxRecipients in AVD-AzAlerts-Common.ps1."
+}
+
+# A5 / S-3 follow-up: validate the sender address with the same regex applied to recipients.
+if ($SendFromEmail -notmatch $Script:AvdEmailRegex) {
+    throw "Invalid SendFromEmail address: '$SendFromEmail'. Provide a valid RFC 5321 mailbox."
+}
+
 # JSON-escape email values to prevent special characters from breaking workflow definition
 $SendToEmailValue = (($ResolvedSendToEmails | ForEach-Object { $_ -replace '\\', '\\' -replace '"', '\"' }) -join ';')
 $SendFromEmail = $SendFromEmail -replace '\\', '\\' -replace '"', '\"'
@@ -559,11 +602,17 @@ if (-not $Tags) {
 
 if ([string]::IsNullOrWhiteSpace($CsvPath)) {
     $subPrefix = if ($SubscriptionId.Length -ge 8) { $SubscriptionId.Substring(0, 8) } else { $SubscriptionId }
-    $CsvPath = ".\\avd-webhook-deploy-report-$subPrefix.csv"
+    # C7: build the path explicitly under the current working directory; the previous
+    # ".\file.csv" form broke when the script was run from a different CWD on Linux/Cloud Shell.
+    $CsvPath = Join-Path -Path (Get-Location).Path -ChildPath "avd-webhook-deploy-report-$subPrefix.csv"
 }
 
 $Office365ConnectionStatus = "Unknown"
 $RoleAssignmentStatus = "Unknown"
+
+# G1: trap unhandled errors anywhere in the deployment flow and persist a Failed row to the
+# CSV report before re-throwing, so operators always have an audit trail even on partial failure.
+try {
 
 Write-Step "Checking Azure CLI login"
 & az account show -o none 2>$null
@@ -700,6 +749,7 @@ if ($existingConnectionExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($existin
     }
 
     $connTmpFile = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("office365-connection-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $script:TempFilesToCleanup.Add($connTmpFile) | Out-Null
     try {
         $connBody | ConvertTo-Json -Depth 30 | Set-Content -Path $connTmpFile -Encoding utf8
         $connUri = "${Office365ConnectionResourceId}?api-version=2016-06-01"
@@ -726,8 +776,33 @@ else {
 
 $defaultAlertDefinitionName = "AVD-Category-DefaultFallback"
 
+# Load shared constants and helpers (G10).
+$commonPath = Join-Path -Path $PSScriptRoot -ChildPath 'AVD-AzAlerts-Common.ps1'
+if (-not (Test-Path -Path $commonPath)) {
+    throw "Required helper file not found: $commonPath"
+}
+. $commonPath
+
+# Reusable KQL fragment that builds a per-CorrelationId enrichment table from WVDConnections.
+# Provides: ClientIPAddress, GatewayRegion, ClientOS/Type/Version (annotated), ClientCity/State/Country.
+# Time placeholders {0}/{1} are substituted by the Logic App at runtime from the alert payload.
+$connectionEnrichmentLet = Get-AvdConnEnrichmentLet
+$MinSupportedClientVersion = $Script:AvdMinSupportedClientVersion
+$ResultRowLimit = $Script:AvdMaxResultRows
+
+# A2 (B-2): pick Log Analytics REST audience for the active Azure cloud (sovereign-cloud aware).
+$logAnalyticsAudience = Get-AvdLogAnalyticsAudience
+$logAnalyticsHost = ([uri]$logAnalyticsAudience).Host
+Write-Host "Log Analytics audience: $logAnalyticsAudience (host=$logAnalyticsHost)" -ForegroundColor DarkGray
+
+# Common projection for WVDErrors-based queries: keeps CorrelationId, joins enrichment, then projects
+# the final column set including client geo + gateway + annotated client version.
+# B1 fix: cast CorrelationId to string on the WVDErrors side so the lookup join key types match
+# ConnEnrichment.CorrelationId (also string).
 $commonProjection = @"
 | extend ResourceName = tostring(split(column_ifexists('_ResourceId', ''), '/')[-1])
+| extend CorrelationId = tostring(column_ifexists('CorrelationId', ''))
+| lookup kind=leftouter ConnEnrichment on CorrelationId
 | project
     TimeGenerated = column_ifexists('TimeGenerated', datetime(null)),
     UserName = column_ifexists('UserName', ''),
@@ -736,7 +811,15 @@ $commonProjection = @"
     CodeSymbolic = column_ifexists('CodeSymbolic', ''),
     Message = column_ifexists('Message', ''),
     Operation = column_ifexists('Operation', ''),
-    ResourceName
+    ResourceName,
+    ClientIPAddress,
+    GatewayRegion,
+    ClientCity,
+    ClientState,
+    ClientCountry,
+    ClientOS,
+    ClientType,
+    ClientVersion
 "@
 
 $alertDefinitions = @(
@@ -744,6 +827,7 @@ $alertDefinitions = @(
         Name        = "AVD-Category-AuthenticationIdentity"
         Description = "Consolidated authentication and identity failures in AVD."
         Kql         = @"
+$connectionEnrichmentLet
 WVDErrors
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where CodeSymbolic in (
@@ -760,7 +844,7 @@ WVDErrors
 )
 $commonProjection
 | order by TimeGenerated desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -768,6 +852,7 @@ $commonProjection
         Name        = "AVD-Category-AuthorizationPolicy"
         Description = "Consolidated authorization and logon rights failures in AVD."
         Kql         = @"
+$connectionEnrichmentLet
 WVDErrors
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where CodeSymbolic in (
@@ -777,7 +862,7 @@ WVDErrors
 )
 $commonProjection
 | order by TimeGenerated desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -785,6 +870,7 @@ $commonProjection
         Name        = "AVD-Category-ConnectionNetworkGateway"
         Description = "Consolidated AVD client, DNS, reverse connect, and gateway transport failures."
         Kql         = @"
+$connectionEnrichmentLet
 WVDErrors
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where CodeSymbolic in (
@@ -799,7 +885,7 @@ WVDErrors
 )
 $commonProjection
 | order by TimeGenerated desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -807,6 +893,7 @@ $commonProjection
         Name        = "AVD-Category-SessionHostHealthCapacity"
         Description = "Consolidated session host availability and capacity issues."
         Kql         = @"
+$connectionEnrichmentLet
 WVDErrors
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where CodeSymbolic in (
@@ -816,7 +903,7 @@ WVDErrors
 )
 $commonProjection
 | order by TimeGenerated desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -824,6 +911,7 @@ $commonProjection
         Name        = "AVD-Category-PersonalDesktopAssignment"
         Description = "Consolidated personal desktop assignment and startup failures."
         Kql         = @"
+$connectionEnrichmentLet
 WVDErrors
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where CodeSymbolic in (
@@ -832,7 +920,7 @@ WVDErrors
 )
 $commonProjection
 | order by TimeGenerated desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -840,6 +928,7 @@ $commonProjection
         Name        = "AVD-Category-DeviceGraphicsInput"
         Description = "Consolidated input and graphics subsystem failures."
         Kql         = @"
+$connectionEnrichmentLet
 WVDErrors
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where CodeSymbolic in (
@@ -850,7 +939,7 @@ WVDErrors
 )
 $commonProjection
 | order by TimeGenerated desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -858,6 +947,7 @@ $commonProjection
         Name        = "AVD-Category-FSLogixProfileStorage"
         Description = "Consolidated FSLogix profile and storage attach/detach/access issues."
         Kql         = @"
+$connectionEnrichmentLet
 WVDErrors
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where
@@ -888,7 +978,7 @@ WVDErrors
     )
 $commonProjection
 | order by TimeGenerated desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -896,12 +986,13 @@ $commonProjection
         Name        = "AVD-Category-UnknownUnclassified"
         Description = "Consolidated unknown or unclassified AVD error symbols for triage."
         Kql         = @"
+$connectionEnrichmentLet
 WVDErrors
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where CodeSymbolic == 'Unknown CodeSymbolic - review Message for details.'
 $commonProjection
 | order by TimeGenerated desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -911,15 +1002,34 @@ $commonProjection
         Name        = "AVD-Category-ConnectionFailureRate"
         Description = "Spike in failed connections per host pool from WVDConnections."
         Kql         = @"
+let MinSupportedClient = '$MinSupportedClientVersion';
 WVDConnections
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where State == 'Failed'
 | extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| summarize FailedCount = count() by HostPool, UserName
+| extend Geo = geo_info_from_ip_address(ClientIPAddress)
+| extend ClientCity = tostring(Geo.city), ClientState = tostring(Geo.state), ClientCountry = tostring(Geo.country)
+| extend ClientVersionDisplay = case(
+    isempty(ClientVersion), '(unknown)',
+    isnull(parse_version(ClientVersion)), ClientVersion,
+    parse_version(ClientVersion) < parse_version(MinSupportedClient), strcat(ClientVersion, ' (outdated)'),
+    ClientVersion)
+| summarize FailedCount = count(),
+            ClientIPAddress = any(ClientIPAddress),
+            GatewayRegion = any(GatewayRegion),
+            ClientCity = any(ClientCity),
+            ClientState = any(ClientState),
+            ClientCountry = any(ClientCountry),
+            ClientOS = any(ClientOS),
+            ClientType = any(ClientType),
+            ClientVersion = any(ClientVersionDisplay)
+        by HostPool, UserName
 | where FailedCount > 5
-| project HostPool, UserName, FailedCount
+| project HostPool, UserName, FailedCount,
+          ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry,
+          ClientOS, ClientType, ClientVersion
 | order by FailedCount desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -927,16 +1037,36 @@ WVDConnections
         Name        = "AVD-Category-DisconnectionSpike"
         Description = "Abnormal disconnection rate across session hosts indicating infrastructure or network instability."
         Kql         = @"
+let MinSupportedClient = '$MinSupportedClientVersion';
 WVDConnections
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where State == 'Completed'
 | where column_ifexists('ConnectionType', '') == 'Disconnected' or column_ifexists('IsReconnect', false) == true
 | extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| summarize DisconnectCount = count() by HostPool, SessionHostName
+| extend Geo = geo_info_from_ip_address(ClientIPAddress)
+| extend ClientCity = tostring(Geo.city), ClientState = tostring(Geo.state), ClientCountry = tostring(Geo.country)
+| extend ClientVersionDisplay = case(
+    isempty(ClientVersion), '(unknown)',
+    isnull(parse_version(ClientVersion)), ClientVersion,
+    parse_version(ClientVersion) < parse_version(MinSupportedClient), strcat(ClientVersion, ' (outdated)'),
+    ClientVersion)
+| summarize DisconnectCount = count(),
+            UserName = any(UserName),
+            ClientIPAddress = any(ClientIPAddress),
+            GatewayRegion = any(GatewayRegion),
+            ClientCity = any(ClientCity),
+            ClientState = any(ClientState),
+            ClientCountry = any(ClientCountry),
+            ClientOS = any(ClientOS),
+            ClientType = any(ClientType),
+            ClientVersion = any(ClientVersionDisplay)
+        by HostPool, SessionHostName
 | where DisconnectCount > 10
-| project HostPool, SessionHostName, DisconnectCount
+| project HostPool, SessionHostName, DisconnectCount, UserName,
+          ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry,
+          ClientOS, ClientType, ClientVersion
 | order by DisconnectCount desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -951,7 +1081,7 @@ WVDAgentHealthStatus
 | extend HostPool = tostring(split(_ResourceId, '/')[-1])
 | project HostPool, SessionHostName, Status, LastHeartBeat = TimeGenerated
 | order by LastHeartBeat asc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -967,7 +1097,7 @@ WVDAgentHealthStatus
 | extend StaleSinceMin = datetime_diff('minute', now(), TimeGenerated)
 | project HostPool, SessionHostName, Status, StaleSinceMin
 | order by StaleSinceMin desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -975,6 +1105,7 @@ WVDAgentHealthStatus
         Name        = "AVD-Category-BandwidthDrop"
         Description = "Per-connection estimated bandwidth drops below threshold from WVDConnectionNetworkData."
         Kql         = @"
+$connectionEnrichmentLet
 WVDConnectionNetworkData
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | summarize P10BW = percentile(EstAvailableBandwidthKBps, 10) by CorrelationId
@@ -982,12 +1113,15 @@ WVDConnectionNetworkData
 | join kind=inner (
     WVDConnections
     | where TimeGenerated between (datetime({0}) .. datetime({1}))
-    | project CorrelationId, UserName, SessionHostName, _ResourceId
+    | project CorrelationId, UserName, _ResourceId
 ) on CorrelationId
 | extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| project HostPool, UserName, SessionHostName, P10BW_KBps = round(P10BW, 0)
+| lookup kind=leftouter ConnEnrichment on CorrelationId
+| project HostPool, UserName, SessionHostName = ClientSessionHost, P10BW_KBps = round(P10BW, 0),
+          ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry,
+          ClientOS, ClientType, ClientVersion
 | order by P10BW_KBps asc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -995,6 +1129,7 @@ WVDConnectionNetworkData
         Name        = "AVD-Category-RTTPerUser"
         Description = "Per-user P95 round-trip time exceeds threshold from WVDConnectionNetworkData."
         Kql         = @"
+$connectionEnrichmentLet
 WVDConnectionNetworkData
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | summarize P95RTT = percentile(EstRoundTripTimeInMs, 95) by CorrelationId
@@ -1002,12 +1137,15 @@ WVDConnectionNetworkData
 | join kind=inner (
     WVDConnections
     | where TimeGenerated between (datetime({0}) .. datetime({1}))
-    | project CorrelationId, UserName, SessionHostName, _ResourceId
+    | project CorrelationId, UserName, _ResourceId
 ) on CorrelationId
 | extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| project HostPool, UserName, SessionHostName, P95RTT_ms = round(P95RTT, 0)
+| lookup kind=leftouter ConnEnrichment on CorrelationId
+| project HostPool, UserName, SessionHostName = ClientSessionHost, P95RTT_ms = round(P95RTT, 0),
+          ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry,
+          ClientOS, ClientType, ClientVersion
 | order by P95RTT_ms desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -1015,6 +1153,7 @@ WVDConnectionNetworkData
         Name        = "AVD-Category-SignInPhaseDelay"
         Description = "Prolonged sign-in phases detected from WVDCheckpoints (profile load, GPO, shell start)."
         Kql         = @"
+$connectionEnrichmentLet
 WVDCheckpoints
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | where Source == 'WVDConnections'
@@ -1022,9 +1161,14 @@ WVDCheckpoints
 | extend HostPool = tostring(split(_ResourceId, '/')[-1])
 | extend DurationSec = datetime_diff('second', TimeGenerated, todatetime(tostring(Parameters.StartTime)))
 | where DurationSec > 15
-| project HostPool, UserName, Name, DurationSec, SessionHostName = tostring(Parameters.SessionHostName)
+| extend CorrelationId = tostring(column_ifexists('CorrelationId', ''))
+| lookup kind=leftouter ConnEnrichment on CorrelationId
+| project HostPool, UserName, Name, DurationSec,
+          SessionHostName = coalesce(tostring(Parameters.SessionHostName), ClientSessionHost),
+          ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry,
+          ClientOS, ClientType, ClientVersion
 | order by DurationSec desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -1032,6 +1176,7 @@ WVDCheckpoints
         Name        = "AVD-Category-FrameQualityDegradation"
         Description = "[Preview] End-to-end frame delay or dropped frames exceeding threshold from ConnectionGraphicsData."
         Kql         = @"
+$connectionEnrichmentLet
 ConnectionGraphicsData
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 | summarize AvgFrameDelay = avg(EstEndToEndDelayInMs), DropPct = avg(FramesSkippedPercentage) by CorrelationId
@@ -1039,12 +1184,16 @@ ConnectionGraphicsData
 | join kind=inner (
     WVDConnections
     | where TimeGenerated between (datetime({0}) .. datetime({1}))
-    | project CorrelationId, UserName, SessionHostName, _ResourceId
+    | project CorrelationId, UserName, _ResourceId
 ) on CorrelationId
 | extend HostPool = tostring(split(_ResourceId, '/')[-1])
-| project HostPool, UserName, SessionHostName, AvgFrameDelay_ms = round(AvgFrameDelay, 0), DroppedFramesPct = round(DropPct, 1)
+| lookup kind=leftouter ConnEnrichment on CorrelationId
+| project HostPool, UserName, SessionHostName = ClientSessionHost,
+          AvgFrameDelay_ms = round(AvgFrameDelay, 0), DroppedFramesPct = round(DropPct, 1),
+          ClientIPAddress, GatewayRegion, ClientCity, ClientState, ClientCountry,
+          ClientOS, ClientType, ClientVersion
 | order by AvgFrameDelay_ms desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 
@@ -1054,11 +1203,12 @@ ConnectionGraphicsData
         Name        = "AVD-Category-DefaultFallback"
         Description = "Fallback WVDErrors query when alert rule name is not mapped."
         Kql         = @"
+$connectionEnrichmentLet
 WVDErrors
 | where TimeGenerated between (datetime({0}) .. datetime({1}))
 $commonProjection
 | order by TimeGenerated desc
-| limit 100
+| limit $ResultRowLimit
 "@
     }
 )
@@ -1177,10 +1327,12 @@ if ($regionTimeZoneMap.ContainsKey($locationKey)) {
 }
 Write-Host "Timezone for region '$Location': $CustomerTimeZone ($CustomerTzAbbrev)"
 
-$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$WorkspaceName', $WorkspaceName)
-$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$WorkspaceId', $WorkspaceId)
-$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$CustomerTimeZone', $CustomerTimeZone)
-$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$CustomerTzAbbrev', $CustomerTzAbbrev)
+# S4: HTML-encode every value substituted into the email template body to prevent
+# stored-XSS via a malicious workspace/region name showing up in operator inboxes.
+$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$WorkspaceName', (ConvertTo-AvdHtmlEncoded $WorkspaceName))
+$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$WorkspaceId', (ConvertTo-AvdHtmlEncoded $WorkspaceId))
+$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$CustomerTimeZone', (ConvertTo-AvdHtmlEncoded $CustomerTimeZone))
+$alertEmailHtmlExpr = $alertEmailHtmlExpr.Replace('$CustomerTzAbbrev', (ConvertTo-AvdHtmlEncoded $CustomerTzAbbrev))
 
 $repoBaseUrl     = "https://github.com/AzaryaShaulov/AVD/blob/main/AVD-AzAlerts"
 $alertMatrixUrl  = "$repoBaseUrl/AVD-AzAlerts-Alerts-Matrix.md"
@@ -1299,7 +1451,7 @@ $workflowDefinition = @{
             }
             inputs   = @{
                 method         = 'POST'
-                uri            = "https://api.loganalytics.io/v1/workspaces/$WorkspaceId/query"
+                uri            = "https://$logAnalyticsHost/v1/workspaces/$WorkspaceId/query"
                 headers        = @{
                     'Content-Type' = 'application/json'
                 }
@@ -1308,7 +1460,7 @@ $workflowDefinition = @{
                 }
                 authentication = @{
                     type     = 'ManagedServiceIdentity'
-                    audience = 'https://api.loganalytics.io/'
+                    audience = $logAnalyticsAudience
                 }
             }
             limit   = @{
@@ -1476,6 +1628,7 @@ $body = @{
 Write-Step "Deploying Logic App"
 $workflowResourceId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Logic/workflows/$LogicAppName"
 $workflowTempFile = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("logicapp-{0}-{1}.json" -f $LogicAppName, [guid]::NewGuid().ToString('N'))
+$script:TempFilesToCleanup.Add($workflowTempFile) | Out-Null
 try {
     $body | ConvertTo-Json -Depth 100 | Set-Content -Path $workflowTempFile -Encoding utf8
 
@@ -1514,20 +1667,35 @@ $principalId = $logicApp.identity.principalId
 Write-Host "Logic App Managed Identity PrincipalId: $principalId"
 
 Write-Step "Assigning Log Analytics Reader to Logic App managed identity"
+# S9: managed-identity object IDs can take 30-60s to propagate to Microsoft Graph and ARM
+# after the Logic App is first created. Retry the role creation a few times before giving up.
 $roleCreateOutput = $null
 $roleCreateExitCode = 1
-try {
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    $roleCreateOutput = & az role assignment create `
-        --assignee-object-id $principalId `
-        --assignee-principal-type ServicePrincipal `
-        --role "Log Analytics Reader" `
-        --scope $WorkspaceResourceId 2>&1
-    $roleCreateExitCode = $LASTEXITCODE
-    $ErrorActionPreference = $prevEAP
-} catch {
-    $ErrorActionPreference = $prevEAP
+$roleAttempts = 3
+for ($attempt = 1; $attempt -le $roleAttempts; $attempt++) {
+    try {
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        $roleCreateOutput = & az role assignment create `
+            --assignee-object-id $principalId `
+            --assignee-principal-type ServicePrincipal `
+            --role "Log Analytics Reader" `
+            --scope $WorkspaceResourceId 2>&1
+        $roleCreateExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+    } catch {
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($roleCreateExitCode -eq 0) { break }
+    $stderrText = ($roleCreateOutput | Out-String)
+    # Retry on transient propagation errors only.
+    if ($stderrText -notmatch 'PrincipalNotFound|does not exist in the directory|cannot find the .* with id|Unknown user|UnknownPrincipal') {
+        break
+    }
+    if ($attempt -lt $roleAttempts) {
+        Write-Host "Role assignment attempt $attempt failed with transient propagation error; retrying in 10s..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 10
+    }
 }
 
 if ($roleCreateExitCode -ne 0) {
@@ -1548,24 +1716,37 @@ else {
     $RoleAssignmentStatus = "CreatedOrExists"
 }
 
-# Verify role assignment was actually applied
+# Verify role assignment was actually applied. ARM cache propagation can take 5-30s
+# after a successful create, so retry the verify a few times before declaring failure (A4).
 $verifyRoleJson = $null
-try {
-    $prevEAP = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    $verifyRoleJson = & az role assignment list `
-        --assignee-object-id $principalId `
-        --scope $WorkspaceResourceId `
-        --role "Log Analytics Reader" `
-        --query "[0].id" -o tsv 2>&1
-    $verifyExitCode = $LASTEXITCODE
-    $ErrorActionPreference = $prevEAP
-} catch {
-    $verifyExitCode = 1
-    $ErrorActionPreference = $prevEAP
+$verifyAttempts = 3
+$verifySucceeded = $false
+for ($vAttempt = 1; $vAttempt -le $verifyAttempts; $vAttempt++) {
+    try {
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        $verifyRoleJson = & az role assignment list `
+            --assignee-object-id $principalId `
+            --scope $WorkspaceResourceId `
+            --role "Log Analytics Reader" `
+            --query "[0].id" -o tsv 2>&1
+        $verifyExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+    } catch {
+        $verifyExitCode = 1
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($verifyExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace(($verifyRoleJson | Out-String))) {
+        $verifySucceeded = $true
+        break
+    }
+    if ($vAttempt -lt $verifyAttempts) {
+        Write-Host "Role assignment verification attempt $vAttempt returned empty/error; retrying in 5s (ARM cache propagation)..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds 5
+    }
 }
-if ($verifyExitCode -ne 0 -or [string]::IsNullOrWhiteSpace(($verifyRoleJson | Out-String))) {
-    throw "Role assignment verification failed. The Logic App managed identity does not have 'Log Analytics Reader' on: $WorkspaceResourceId. Assign this role manually before the Logic App can query Log Analytics."
+if (-not $verifySucceeded) {
+    throw "Role assignment verification failed after $verifyAttempts attempts. The Logic App managed identity does not have 'Log Analytics Reader' on: $WorkspaceResourceId. Assign this role manually before the Logic App can query Log Analytics."
 }
 if ($RoleAssignmentStatus -eq "NeedsVerification") {
     Write-Host "Role assignment verified (already existed)."
@@ -1586,17 +1767,12 @@ if ([string]::IsNullOrWhiteSpace($callbackValue)) {
     throw "Failed to retrieve Logic App callback URL."
 }
 
-Write-Step "Ensuring detailed webhook action group"
-Set-DetailedActionGroupWebhook `
-    -SubscriptionId $SubscriptionId `
-    -ResourceGroupName $ResourceGroupName `
-    -ActionGroupName $DetailedActionGroupName `
-    -ReceiverName $DetailedWebhookReceiverName `
-    -ServiceUri $callbackValue
-Write-Host "Detailed webhook action group '$DetailedActionGroupName' is configured."
+# B1(a): action group is now managed exclusively by AVD-AzAlerts-Category-Alerts.ps1
+# (invoked below via Confirm-AVDCategoryAlertsExist). The previous direct PUT via
+# Set-DetailedActionGroupWebhook is removed to eliminate the double-write race.
 
 Write-Step "Ensuring AVD-Category alerts exist (bootstrap if needed)"
-Ensure-AVDCategoryAlertsExist `
+Confirm-AVDCategoryAlertsExist `
     -SubscriptionId $SubscriptionId `
     -ResourceGroupName $ResourceGroupName `
     -WorkspaceResourceGroupName $WorkspaceResourceGroupName `
@@ -1651,7 +1827,9 @@ $reportRows = @(
         DetailedWebhookReceiverName = $DetailedWebhookReceiverName
         SendFromEmail = $SendFromEmail
         SendToRecipients = $SendToEmailValue
-        WebhookUrl = $callbackValue
+        # S1: persist the masked URL by default; only include the SAS-bearing URL when the
+        # operator explicitly asks for it via -IncludeFullCallbackUrl (treat CSV as secret).
+        WebhookUrl = if ($IncludeFullCallbackUrl) { $callbackValue } else { $maskedCallbackUrl }
         LogicAppPrincipalId = $principalId
         IdentityChange = $IdentityChange
         Office365ConnectionStatus = $Office365ConnectionStatus
@@ -1672,4 +1850,47 @@ try {
 }
 catch {
     Write-Warning "Failed to write CSV report to '$CsvPath': $($_.Exception.Message)"
+}
+
+} # end G1 outer try
+catch {
+    $g1ErrorMessage = $_.Exception.Message
+    Write-Host ""
+    Write-Host "Deployment FAILED: $g1ErrorMessage" -ForegroundColor Red
+    try {
+        $failureCallback = if ($null -ne $callbackValue -and -not [string]::IsNullOrWhiteSpace($callbackValue)) {
+            if ($IncludeFullCallbackUrl) { $callbackValue } else { ($callbackValue -replace '\?.*$', '?sig=***') }
+        } else { "" }
+        $failureExecSec = [Math]::Round(((Get-Date) - $ScriptStartTime).TotalSeconds, 1)
+        $failureRow = [pscustomobject]@{
+            TimestampUtc                = (Get-Date).ToUniversalTime().ToString("o")
+            SubscriptionId              = $SubscriptionId
+            ResourceGroupName           = $ResourceGroupName
+            LogicAppName                = $LogicAppName
+            Location                    = $Location
+            WorkspaceName               = $WorkspaceName
+            WorkspaceResourceGroupName  = $WorkspaceResourceGroupName
+            DetailedActionGroupName     = $DetailedActionGroupName
+            DetailedWebhookReceiverName = $DetailedWebhookReceiverName
+            SendFromEmail               = $SendFromEmail
+            SendToRecipients            = $SendToEmailValue
+            WebhookUrl                  = $failureCallback
+            LogicAppPrincipalId         = $principalId
+            IdentityChange              = "Unknown"
+            Office365ConnectionStatus   = $Office365ConnectionStatus
+            RoleAssignmentStatus        = $RoleAssignmentStatus
+            ExecutionSeconds            = $failureExecSec
+            Result                      = "Failed: $g1ErrorMessage"
+        }
+        $csvDirectory = Split-Path -Path $CsvPath -Parent
+        if (-not [string]::IsNullOrWhiteSpace($csvDirectory) -and -not (Test-Path -Path $csvDirectory)) {
+            New-Item -Path $csvDirectory -ItemType Directory -Force | Out-Null
+        }
+        $failureRow | Export-Csv -Path $CsvPath -NoTypeInformation -Force
+        Write-Host "Failure CSV report written: $CsvPath" -ForegroundColor Yellow
+    }
+    catch {
+        Write-Warning "Additionally failed to write failure CSV: $($_.Exception.Message)"
+    }
+    throw
 }
